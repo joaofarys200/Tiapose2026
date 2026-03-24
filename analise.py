@@ -21,6 +21,8 @@ STORE_FILES = {
     'Richmond': 'richmond.csv'
 }
 
+Z_OUTLIER_THRESHOLD = 3
+
 
 def load_data():
     """Carrega os CSVs e devolve DataFrame combinado para análises multi-loja."""
@@ -29,6 +31,8 @@ def load_data():
     for store_name, file_name in STORE_FILES.items():
         df = pd.read_csv(file_name)
         df['Date'] = pd.to_datetime(df['Date'])
+        # Preserve rows and only replace missing promotion percentages with zero.
+        df['Pct_On_Sale'] = pd.to_numeric(df['Pct_On_Sale'], errors='coerce').fillna(0.0)
         df['Store'] = store_name
         df['DayName'] = df['Date'].dt.day_name()
         df['Month'] = df['Date'].dt.month
@@ -50,10 +54,57 @@ def print_data_quality(df_all):
     print("Valores em falta por loja e variável:")
     print(miss)
 
-    print("\nOutliers em Num_Customers (Z-score > 3) por loja:")
+    print(f"\nOutliers em Num_Customers (Z-score > {Z_OUTLIER_THRESHOLD}) por loja:")
     for store, grp in df_all.groupby('Store'):
         z = np.abs(stats.zscore(grp['Num_Customers'].dropna()))
-        print(f"  {store:15s}: {(z > 3).sum()}")
+        print(f"  {store:15s}: {(z > Z_OUTLIER_THRESHOLD).sum()}")
+
+
+def plot_acf_by_store(df_all, max_lag=28):
+    print("\n\n=== ACF (NUM_CUSTOMERS) POR LOJA ===\n")
+    fig, axes = plt.subplots(2, 2, figsize=(15, 9), sharex=True, sharey=True)
+    axes = axes.flatten()
+
+    for ax, (store, grp) in zip(axes, df_all.groupby('Store')):
+        y = grp.sort_values('Date')['Num_Customers'].to_numpy(dtype=float)
+        lags = np.arange(1, max_lag + 1)
+        acf_vals = []
+        for lag in lags:
+            if lag >= len(y):
+                acf_vals.append(np.nan)
+            else:
+                acf_vals.append(np.corrcoef(y[lag:], y[:-lag])[0, 1])
+
+        acf_vals = np.array(acf_vals)
+        ax.bar(lags, acf_vals, color='#4C72B0', alpha=0.85)
+        ax.axhline(0, color='black', linewidth=0.8)
+        for seasonal_lag in [7, 14, 21, 28]:
+            ax.axvline(seasonal_lag, color='red', linestyle='--', linewidth=1.0)
+        ax.set_title(f'ACF - {store}')
+        ax.set_xlabel('Lag (dias)')
+        ax.set_ylabel('ACF')
+
+        lag_summary = {lag: acf_vals[lag - 1] for lag in [7, 14, 21, 28]}
+        print(f"{store:15s} | " + " | ".join([f"lag{lag}={val:.3f}" for lag, val in lag_summary.items()]))
+
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_customers_cross_store_heatmap(df_all):
+    print("\n\n=== HEATMAP: CORRELAÇÃO DE NUM_CUSTOMERS ENTRE LOJAS ===\n")
+    pivot_customers = (
+        df_all.pivot_table(index='Date', columns='Store', values='Num_Customers', aggfunc='mean')
+        .sort_index()
+    )
+    corr_customers = pivot_customers.corr().round(3)
+    print(corr_customers)
+
+    fig, ax = plt.subplots(figsize=(7, 6))
+    sns.heatmap(corr_customers, vmin=-1, vmax=1, center=0, annot=True, fmt='.2f', cmap='YlGnBu', square=True, ax=ax)
+    ax.set_title('Num_Customers - Correlação Entre Lojas')
+    plt.tight_layout()
+    plt.show()
 
 
 def print_store_kpis(df_all):
@@ -216,14 +267,13 @@ def main():
 
     df_all = load_data()
     print_data_quality(df_all)
+    plot_acf_by_store(df_all)
+    plot_customers_cross_store_heatmap(df_all)
     print_store_kpis(df_all)
     plot_total_trend(df_all)
     plot_cross_store_comparisons(df_all)
     print_and_plot_tourist_event_impact(df_all)
     plot_correlations(df_all)
-
-    print("\n\n=== EDA MESTRE CONCLUÍDA ===")
-    print("Este script cobre apenas análises com múltiplas lojas. Para análises individuais, usa os scripts por loja.")
 
 
 if __name__ == '__main__':
