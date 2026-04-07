@@ -4,6 +4,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from sklearn.ensemble import RandomForestRegressor
+import xgboost as xgb
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 
@@ -16,13 +18,18 @@ STORE_FILES = {
     "Philadelphia": "philadelphia.csv",
     "Richmond": "richmond.csv",
 }
-
-METHODS = ["SeasonalNaive7", "ETS_HoltWinters", "ARIMA"]
+METHODS = ["SeasonalNaive7", "ETS_HoltWinters", "ARIMA", "RandomForest", "XGBoost"]
 HORIZONS = (1, 2, 3, 4, 5, 6, 7)
 N_BACKTEST_SPLITS = 12
 SEASONAL_PERIOD = 7
 MIN_TRAIN_SIZE = 180
 MAX_H = max(HORIZONS)
+
+# Conjuntos de lags a testar para os métodos ML
+LAG_SETS = {
+    "lag7":  list(range(1, 8)),   # lags 1-7
+    "lag14": list(range(1, 15)),  # lags 1-14
+}
 
 
 def load_store_series(store_name: str, file_name: str) -> pd.DataFrame:
@@ -84,7 +91,7 @@ def seasonal_naive_forecast(train: np.ndarray, max_h: int) -> np.ndarray:
     base = train[-SEASONAL_PERIOD:]
     return np.array([base[(h - 1) % SEASONAL_PERIOD] for h in range(1, max_h + 1)], dtype=float)
 
-
+# ETS/Holt-Winters com aditivo para tendência e sazonalidade, e período sazonal de 7 dias. Se o ajuste falhar ou se a série for muito curta, retorna a previsão da Seasonal Naive.
 def ets_forecast(train: np.ndarray, max_h: int) -> np.ndarray:
     fallback = seasonal_naive_forecast(train, max_h)
     if len(train) < (2 * SEASONAL_PERIOD):
@@ -119,6 +126,60 @@ def arima_forecast(train: np.ndarray, max_h: int) -> np.ndarray:
         ).fit()
         pred = np.asarray(fit.forecast(steps=max_h), dtype=float)
         return pred
+    except Exception:
+        return fallback
+
+
+def _build_direct_dataset(train: np.ndarray, lags: list[int], h: int) -> tuple[np.ndarray, np.ndarray]:
+    """Constrói dataset para direct forecasting: features = lags em t, target = t+h."""
+    max_lag = max(lags)
+    X, y = [], []
+    for t in range(max_lag - 1, len(train) - h):
+        X.append([train[t - (lag - 1)] for lag in lags])
+        y.append(train[t + h])
+    return np.array(X, dtype=float), np.array(y, dtype=float)
+
+
+def _predict_features(train: np.ndarray, lags: list[int]) -> np.ndarray:
+    return np.array([[train[-lag] for lag in lags]], dtype=float)
+
+
+def rf_forecast(train: np.ndarray, max_h: int, lags: list[int]) -> np.ndarray:
+    fallback = seasonal_naive_forecast(train, max_h)
+    if len(train) < max(lags) + max_h + 10:
+        return fallback
+    try:
+        X_pred = _predict_features(train, lags)
+        preds = []
+        for h in range(1, max_h + 1):
+            X_tr, y_tr = _build_direct_dataset(train, lags, h)
+            if len(X_tr) < 10:
+                preds.append(fallback[h - 1])
+                continue
+            model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
+            model.fit(X_tr, y_tr)
+            preds.append(float(model.predict(X_pred)[0]))
+        return np.array(preds, dtype=float)
+    except Exception:
+        return fallback
+
+
+def xgb_forecast(train: np.ndarray, max_h: int, lags: list[int]) -> np.ndarray:
+    fallback = seasonal_naive_forecast(train, max_h)
+    if len(train) < max(lags) + max_h + 10:
+        return fallback
+    try:
+        X_pred = _predict_features(train, lags)
+        preds = []
+        for h in range(1, max_h + 1):
+            X_tr, y_tr = _build_direct_dataset(train, lags, h)
+            if len(X_tr) < 10:
+                preds.append(fallback[h - 1])
+                continue
+            model = xgb.XGBRegressor(n_estimators=100, random_state=42, verbosity=0)
+            model.fit(X_tr, y_tr)
+            preds.append(float(model.predict(X_pred)[0]))
+        return np.array(preds, dtype=float)
     except Exception:
         return fallback
 
@@ -162,27 +223,73 @@ def run_rolling_backtest(series: np.ndarray) -> pd.DataFrame:
                     }
                 )
 
+        for lag_name, lags in LAG_SETS.items():
+            ml_preds = [
+                ("RandomForest", rf_forecast(train, MAX_H, lags)),
+                ("XGBoost",      xgb_forecast(train, MAX_H, lags)),
+            ]
+            for ml_name, pred_vec in ml_preds:
+                for h in HORIZONS:
+                    rows.append(
+                        {
+                            "Split": split_id,
+                            "Horizon": h,
+                            "Method": ml_name,
+                            "LagSet": lag_name,
+                            "y_true": float(y_future[h - 1]),
+                            "y_pred": float(pred_vec[h - 1]),
+                        }
+                    )
+
     return pd.DataFrame(rows)
 
 
 def aggregate_metrics_from_predictions(pred_df: pd.DataFrame) -> pd.DataFrame:
-    metric_rows = []
-
-    for keys, grp in pred_df.groupby(["Store", "Method", "LagSet", "Horizon"]):
+    # 1. calcular métricas por split individual (exceto R2, que precisa de múltiplos pontos)
+    split_rows = []
+    for keys, grp in pred_df.groupby(["Store", "Method", "LagSet", "Horizon", "Split"]):
         y_true = grp["y_true"].to_numpy(dtype=float)
         y_pred = grp["y_pred"].to_numpy(dtype=float)
-        row = {
-            "Store": keys[0],
-            "Method": keys[1],
-            "LagSet": keys[2],
+        split_rows.append({
+            "Store":   keys[0],
+            "Method":  keys[1],
+            "LagSet":  keys[2],
             "Horizon": keys[3],
-            "Splits": len(grp),
-            **evaluate(y_true, y_pred),
-        }
-        metric_rows.append(row)
+            "Split":   keys[4],
+            "MAE":  mae(y_true, y_pred),
+            "RMSE": rmse(y_true, y_pred),
+            "NMAE": nmae(y_true, y_pred),
+        })
+    split_df = pd.DataFrame(split_rows)
 
-    out = pd.DataFrame(metric_rows)
-    return out.sort_values(["Store", "Horizon", "sMAPE", "MAE"]).reset_index(drop=True)
+    # 2. agregar via mediana (robusta a outliers) sobre os splits
+    median_cols = ["MAE", "RMSE", "NMAE"]
+    agg = (
+        split_df
+        .groupby(["Store", "Method", "LagSet", "Horizon"])[median_cols]
+        .median()
+        .round(3)
+        .reset_index()
+    )
+    counts = (
+        split_df
+        .groupby(["Store", "Method", "LagSet", "Horizon"])["Split"]
+        .count()
+        .reset_index(name="Splits")
+    )
+    out = counts.merge(agg, on=["Store", "Method", "LagSet", "Horizon"])
+
+    # 3. R2 calculado sobre todos os splits em conjunto (necessita múltiplos pontos)
+    r2_rows = []
+    for keys, grp in pred_df.groupby(["Store", "Method", "LagSet", "Horizon"]):
+        r2_rows.append({
+            "Store": keys[0], "Method": keys[1], "LagSet": keys[2], "Horizon": keys[3],
+            "R2": round(r2(grp["y_true"].to_numpy(dtype=float), grp["y_pred"].to_numpy(dtype=float)), 4),
+        })
+    r2_df = pd.DataFrame(r2_rows)
+    out = out.merge(r2_df, on=["Store", "Method", "LagSet", "Horizon"])
+
+    return out.sort_values(["Store", "Horizon", "NMAE", "MAE"]).reset_index(drop=True)
 
 
 def add_improvement_vs_seasonal(agg: pd.DataFrame) -> pd.DataFrame:
@@ -194,13 +301,13 @@ def add_improvement_vs_seasonal(agg: pd.DataFrame) -> pd.DataFrame:
         if baseline.empty:
             continue
 
-        baseline_smape = float(baseline["sMAPE"].iloc[0])
-        if baseline_smape == 0:
+        baseline_nmae = float(baseline["NMAE"].iloc[0])
+        if baseline_nmae == 0:
             continue
 
         idx = (out["Store"] == store) & (out["Horizon"] == horizon)
         out.loc[idx, "Improvement_vs_SeasonalNaive7_pct"] = (
-            (baseline_smape - out.loc[idx, "sMAPE"]) / baseline_smape
+            (baseline_nmae - out.loc[idx, "NMAE"]) / baseline_nmae
         ) * 100
 
     out["Improvement_vs_SeasonalNaive7_pct"] = out["Improvement_vs_SeasonalNaive7_pct"].round(3)
@@ -209,17 +316,21 @@ def add_improvement_vs_seasonal(agg: pd.DataFrame) -> pd.DataFrame:
 
 def choose_best_method(agg: pd.DataFrame) -> pd.DataFrame:
     return (
-        agg.sort_values(["Store", "Horizon", "sMAPE", "MAE"]).groupby(["Store", "Horizon"]).head(1).reset_index(drop=True)
+        agg.sort_values(["Store", "Horizon", "NMAE", "MAE"]).groupby(["Store", "Horizon"]).head(1).reset_index(drop=True)
     )
 
 
-def forecast_next7(train: np.ndarray, method: str) -> np.ndarray:
+def forecast_next7(train: np.ndarray, method: str, lag_set: str = "-") -> np.ndarray:
     if method == "SeasonalNaive7":
         return seasonal_naive_forecast(train, MAX_H)
     if method == "ETS_HoltWinters":
         return ets_forecast(train, MAX_H)
     if method == "ARIMA":
         return arima_forecast(train, MAX_H)
+    if method == "RandomForest":
+        return rf_forecast(train, MAX_H, LAG_SETS[lag_set])
+    if method == "XGBoost":
+        return xgb_forecast(train, MAX_H, LAG_SETS[lag_set])
     raise ValueError(f"Unknown method: {method}")
 
 
@@ -228,7 +339,7 @@ def main():
     series_by_store = {}
 
     print("=" * 90)
-    print(" UNIVARIATE FORECASTING - Seasonal Naive, Holt-Winters/ETS, ARIMA")
+    print(" UNIVARIATE FORECASTING - Seasonal Naive, Holt-Winters/ETS, ARIMA, Random Forest, XGBoost")
     print("=" * 90)
     print(f"Backtesting rolling splits: {N_BACKTEST_SPLITS}")
 
@@ -256,10 +367,12 @@ def main():
 
         if best_h7.empty:
             chosen_method = "SeasonalNaive7"
+            chosen_lagset = "-"
         else:
             chosen_method = str(best_h7.iloc[0]["Method"])
+            chosen_lagset = str(best_h7.iloc[0]["LagSet"])
 
-        preds = forecast_next7(series, chosen_method)
+        preds = forecast_next7(series, chosen_method, chosen_lagset)
         last_date = df["Date"].max()
 
         for h in HORIZONS:
@@ -267,7 +380,7 @@ def main():
                 {
                     "Store": store_name,
                     "ChosenMethod_H7": chosen_method,
-                    "ChosenLagSet_H7": "-",
+                    "ChosenLagSet_H7": chosen_lagset,
                     "Horizon": h,
                     "ForecastDate": (last_date + pd.Timedelta(days=h)).date(),
                     "Pred_Num_Customers": round(max(float(preds[h - 1]), 0.0), 2),
@@ -286,8 +399,8 @@ def main():
     best_df.to_csv(out_best, index=False)
     next7_df.to_csv(out_next7, index=False)
 
-    print("\nBest method by store and horizon (sMAPE then MAE):")
-    print(best_df[["Store", "Horizon", "Method", "sMAPE", "MAE", "R2", "Improvement_vs_SeasonalNaive7_pct"]])
+    print("\nBest method by store and horizon (NMAE then MAE):")
+    print(best_df[["Store", "Horizon", "Method", "NMAE", "MAE", "R2", "Improvement_vs_SeasonalNaive7_pct"]])
 
     print("\nNext 7-day forecasts by chosen H=7 strategy:")
     print(next7_df)
