@@ -235,25 +235,34 @@ def load_forecast_groups(forecast_file: Path) -> list[Group]:
     return groups
 
 
-def solve_o2(groups: list[Group], options_by_group: dict[int, list[Option]], units_cap: int) -> dict[int, Option]:
-    states: dict[int, int] = {0: 0}
-    backtrack: list[dict[int, tuple[int, Option]]] = []
+def solve_o2(
+    groups: list[Group],
+    options_by_group: dict[int, list[Option]],
+    units_cap: int,
+    store_to_bit: dict[str, int],
+    require_all_stores_active: bool,
+) -> dict[int, Option]:
+    states: dict[tuple[int, int], int] = {(0, 0): 0}
+    backtrack: list[dict[tuple[int, int], tuple[int, int, Option]]] = []
 
     for g in groups:
-        next_states: dict[int, int] = {}
-        next_choice: dict[int, tuple[int, Option]] = {}
+        next_states: dict[tuple[int, int], int] = {}
+        next_choice: dict[tuple[int, int], tuple[int, int, Option]] = {}
         options = options_by_group[g.idx]
+        bit = store_to_bit[g.store]
 
-        for used_units, score_profit in states.items():
+        for (used_units, used_mask), score_profit in states.items():
             for opt in options:
                 new_units = used_units + opt.units_total
                 if new_units > units_cap:
                     continue
+                new_mask = used_mask | (1 << bit) if opt.hr_total > 0 else used_mask
                 new_profit = score_profit + opt.daily_profit
-                cur = next_states.get(new_units)
+                key = (new_units, new_mask)
+                cur = next_states.get(key)
                 if cur is None or new_profit > cur:
-                    next_states[new_units] = new_profit
-                    next_choice[new_units] = (used_units, opt)
+                    next_states[key] = new_profit
+                    next_choice[key] = (used_units, used_mask, opt)
 
         states = next_states
         backtrack.append(next_choice)
@@ -261,40 +270,58 @@ def solve_o2(groups: list[Group], options_by_group: dict[int, list[Option]], uni
     if not states:
         raise RuntimeError("No feasible O2 solution found.")
 
-    best_units = max(states.keys(), key=lambda u: states[u])
+    all_active_mask = (1 << len(store_to_bit)) - 1
+    candidates = [
+        (k, v) for k, v in states.items()
+        if (k[1] == all_active_mask) or (not require_all_stores_active)
+    ]
+    if not candidates:
+        raise RuntimeError("No feasible O2 solution found with activity in all stores.")
+
+    best_key, _ = max(candidates, key=lambda kv: kv[1])
 
     chosen: dict[int, Option] = {}
-    cur_units = best_units
+    cur_units, cur_mask = best_key
     for i in range(len(groups) - 1, -1, -1):
-        prev_units, opt = backtrack[i][cur_units]
+        prev_units, prev_mask, opt = backtrack[i][(cur_units, cur_mask)]
         chosen[groups[i].idx] = opt
         cur_units = prev_units
+        cur_mask = prev_mask
 
     return chosen
 
 
-def solve_o3(groups: list[Group], options_by_group: dict[int, list[Option]], units_cap: int) -> dict[int, Option]:
-    states: dict[int, tuple[int, int]] = {0: (0, 0)}
-    backtrack: list[dict[int, tuple[int, Option]]] = []
+def solve_o3(
+    groups: list[Group],
+    options_by_group: dict[int, list[Option]],
+    units_cap: int,
+    store_to_bit: dict[str, int],
+    require_all_stores_active: bool,
+) -> dict[int, Option]:
+    states: dict[tuple[int, int], tuple[int, int]] = {(0, 0): (0, 0)}
+    backtrack: list[dict[tuple[int, int], tuple[int, int, Option]]] = []
 
     for g in groups:
-        next_states: dict[int, tuple[int, int]] = {}
-        next_choice: dict[int, tuple[int, Option]] = {}
+        next_states: dict[tuple[int, int], tuple[int, int]] = {}
+        next_choice: dict[tuple[int, int], tuple[int, int, Option]] = {}
         options = options_by_group[g.idx]
+        bit = store_to_bit[g.store]
 
-        for used_units, (score_profit, score_hr) in states.items():
+        for (used_units, used_mask), (score_profit, score_hr) in states.items():
             for opt in options:
                 new_units = used_units + opt.units_total
                 if new_units > units_cap:
                     continue
+                new_mask = used_mask | (1 << bit) if opt.hr_total > 0 else used_mask
 
                 new_profit = score_profit + opt.daily_profit
                 new_hr = score_hr + opt.hr_total
 
-                cur = next_states.get(new_units)
+                key = (new_units, new_mask)
+                cur = next_states.get(key)
                 if cur is None or (new_profit > cur[0]) or (new_profit == cur[0] and new_hr < cur[1]):
-                    next_states[new_units] = (new_profit, new_hr)
-                    next_choice[new_units] = (used_units, opt)
+                    next_states[key] = (new_profit, new_hr)
+                    next_choice[key] = (used_units, used_mask, opt)
 
         states = next_states
         backtrack.append(next_choice)
@@ -302,14 +329,23 @@ def solve_o3(groups: list[Group], options_by_group: dict[int, list[Option]], uni
     if not states:
         raise RuntimeError("No feasible O3 solution found.")
 
-    best_units = max(states.keys(), key=lambda u: (states[u][0], -states[u][1]))
+    all_active_mask = (1 << len(store_to_bit)) - 1
+    candidates = [
+        (k, v) for k, v in states.items()
+        if (k[1] == all_active_mask) or (not require_all_stores_active)
+    ]
+    if not candidates:
+        raise RuntimeError("No feasible O3 solution found with activity in all stores.")
+
+    best_key, _ = max(candidates, key=lambda kv: (kv[1][0], -kv[1][1]))
 
     chosen: dict[int, Option] = {}
-    cur_units = best_units
+    cur_units, cur_mask = best_key
     for i in range(len(groups) - 1, -1, -1):
-        prev_units, opt = backtrack[i][cur_units]
+        prev_units, prev_mask, opt = backtrack[i][(cur_units, cur_mask)]
         chosen[groups[i].idx] = opt
         cur_units = prev_units
+        cur_mask = prev_mask
 
     return chosen
 
@@ -382,6 +418,17 @@ def main() -> None:
         default="optimization",
         help="Prefix for output CSV files.",
     )
+    parser.add_argument(
+        "--require-all-stores-active",
+        action="store_true",
+        default=True,
+        help="Require O2/O3 to allocate staff in all stores at least once in the week (default: enabled).",
+    )
+    parser.add_argument(
+        "--allow-store-shutdown",
+        action="store_true",
+        help="Disable all-stores activity requirement for O2/O3.",
+    )
     args = parser.parse_args()
 
     forecast_file = Path(args.forecast_file)
@@ -400,8 +447,23 @@ def main() -> None:
         options_o3[g.idx] = g_o3
         selected_o1[g.idx] = g_o1
 
-    selected_o2 = solve_o2(groups, options_o2, args.units_cap)
-    selected_o3 = solve_o3(groups, options_o3, args.units_cap)
+    store_to_bit = {store: i for i, store in enumerate(STORE_PARAMS.keys())}
+    require_all_stores_active = args.require_all_stores_active and (not args.allow_store_shutdown)
+
+    selected_o2 = solve_o2(
+        groups,
+        options_o2,
+        args.units_cap,
+        store_to_bit,
+        require_all_stores_active,
+    )
+    selected_o3 = solve_o3(
+        groups,
+        options_o3,
+        args.units_cap,
+        store_to_bit,
+        require_all_stores_active,
+    )
 
     plan_o1, summary_o1 = build_plan_df("O1", groups, selected_o1)
     plan_o2, summary_o2 = build_plan_df("O2", groups, selected_o2)
@@ -428,6 +490,7 @@ def main() -> None:
     print("Optimization completed.")
     print(f"Forecast source: {forecast_file}")
     print(f"Units cap (O2/O3): {args.units_cap}")
+    print(f"Require all stores active (O2/O3): {require_all_stores_active}")
     print()
     print(global_summary.to_string(index=False))
     print()
