@@ -48,41 +48,11 @@ def rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(math.sqrt(np.mean((y_true - y_pred) ** 2)))
 
 
-def mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    denom = np.where(y_true == 0, np.nan, y_true)
-    return float(np.nanmean(np.abs((y_true - y_pred) / denom)) * 100)
-
-
-def smape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    denom = (np.abs(y_true) + np.abs(y_pred)) / 2
-    denom = np.where(denom == 0, np.nan, denom)
-    return float(np.nanmean(np.abs(y_true - y_pred) / denom) * 100)
-
-
-def r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    ss_res = float(np.sum((y_true - y_pred) ** 2))
-    ss_tot = float(np.sum((y_true - np.mean(y_true)) ** 2))
-    if ss_tot == 0:
-        return float("nan")
-    return 1 - (ss_res / ss_tot)
-
-
 def nmae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     denom = np.mean(np.abs(y_true))
     if denom == 0:
         return float("nan")
     return float(np.mean(np.abs(y_true - y_pred)) / denom)
-
-
-def evaluate(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
-    return {
-        "MAE": round(mae(y_true, y_pred), 3),
-        "RMSE": round(rmse(y_true, y_pred), 3),
-        "MAPE": round(mape(y_true, y_pred), 3),
-        "sMAPE": round(smape(y_true, y_pred), 3),
-        "R2": round(r2(y_true, y_pred), 4),
-        "NMAE": round(nmae(y_true, y_pred), 4),
-    }
 
 
 def seasonal_naive_forecast(train: np.ndarray, max_h: int) -> np.ndarray:
@@ -279,16 +249,6 @@ def aggregate_metrics_from_predictions(pred_df: pd.DataFrame) -> pd.DataFrame:
     )
     out = counts.merge(agg, on=["Store", "Method", "LagSet", "Horizon"])
 
-    # 3. R2 calculado sobre todos os splits em conjunto (necessita múltiplos pontos)
-    r2_rows = []
-    for keys, grp in pred_df.groupby(["Store", "Method", "LagSet", "Horizon"]):
-        r2_rows.append({
-            "Store": keys[0], "Method": keys[1], "LagSet": keys[2], "Horizon": keys[3],
-            "R2": round(r2(grp["y_true"].to_numpy(dtype=float), grp["y_pred"].to_numpy(dtype=float)), 4),
-        })
-    r2_df = pd.DataFrame(r2_rows)
-    out = out.merge(r2_df, on=["Store", "Method", "LagSet", "Horizon"])
-
     return out.sort_values(["Store", "Horizon", "NMAE", "MAE"]).reset_index(drop=True)
 
 
@@ -400,7 +360,7 @@ def main():
     next7_df.to_csv(out_next7, index=False)
 
     print("\nBest method by store and horizon (NMAE then MAE):")
-    print(best_df[["Store", "Horizon", "Method", "NMAE", "MAE", "R2", "Improvement_vs_SeasonalNaive7_pct"]])
+    print(best_df[["Store", "Horizon", "Method", "NMAE", "MAE", "Improvement_vs_SeasonalNaive7_pct"]])
 
     print("\nNext 7-day forecasts by chosen H=7 strategy:")
     print(next7_df)

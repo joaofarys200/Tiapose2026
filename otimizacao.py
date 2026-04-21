@@ -165,13 +165,17 @@ def pareto_profit_hr_frontier(options: list[Option]) -> list[Option]:
 
 
 def generate_group_options(group: Group, units_cap: int) -> tuple[list[Option], list[Option], Option]:
-    max_x = math.ceil(group.customers / 7) if group.customers > 0 else 0
-    max_j = math.ceil(group.customers / 6) if group.customers > 0 else 0
+    # Explicit bounds discussed in class:
+    #   lower = 0
+    #   upper = ceil(C/6) (shared bound for J and X search domain)
+    # This keeps the search space simple and guarantees enough capacity if needed.
+    lower = 0
+    upper = math.ceil(group.customers / 6) if group.customers > 0 else 0
 
     options_raw: list[Option] = []
     for pr in PR_VALUES:
-        for x in range(max_x + 1):
-            for j in range(max_j + 1):
+        for x in range(lower, upper + 1):
+            for j in range(lower, upper + 1):
                 opt = build_day_option(group, pr, x, j)
                 options_raw.append(opt)
 
@@ -321,6 +325,8 @@ def build_plan_df(objective: str, groups: list[Group], selected: dict[int, Optio
                 "Date": g.date.date().isoformat(),
                 "Horizon": g.horizon,
                 "Pred_Customers": g.customers,
+                "LowerBound_JX": 0,
+                "UpperBound_JX": math.ceil(g.customers / 6) if g.customers > 0 else 0,
                 "PR": opt.pr,
                 "X": opt.x,
                 "J": opt.j,

@@ -60,12 +60,6 @@ def rmse(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(math.sqrt(np.mean((y_true - y_pred) ** 2)))
 
 
-def r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    ss_res = float(np.sum((y_true - y_pred) ** 2))
-    ss_tot = float(np.sum((y_true - np.mean(y_true)) ** 2))
-    return float("nan") if ss_tot == 0 else 1.0 - ss_res / ss_tot
-
-
 def nmae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     denom = float(np.mean(np.abs(y_true)))
     return float("nan") if denom == 0 else float(np.mean(np.abs(y_true - y_pred)) / denom)
@@ -192,6 +186,78 @@ def _var_predict(df: pd.DataFrame, origin: int) -> np.ndarray:
         return fallback
 
 
+def _seasonal_naive_from_series(series: np.ndarray, origin: int) -> np.ndarray:
+    base = series[origin - SEASONAL_PERIOD: origin]
+    return np.array([base[(h - 1) % SEASONAL_PERIOD] for h in range(1, MAX_H + 1)], dtype=float)
+
+
+def _var4_predict_all(customers_wide: pd.DataFrame, origin: int) -> dict[str, np.ndarray]:
+    """
+    Global VAR model using Num_Customers from all four stores jointly.
+    Returns one MAX_H forecast vector per store.
+    """
+    store_cols = list(customers_wide.columns)
+    if origin < 30:
+        return {
+            s: _seasonal_naive_from_series(customers_wide[s].to_numpy(dtype=float), origin)
+            for s in store_cols
+        }
+
+    try:
+        train = customers_wide[store_cols].iloc[:origin].to_numpy(dtype=float)
+        model = VAR(train)
+        try:
+            lag_order = model.select_order(maxlags=min(7, origin // 10)).aic
+            lag_order = max(1, lag_order)
+        except Exception:
+            lag_order = 1
+        fit = model.fit(lag_order)
+        fc = fit.forecast(train[-lag_order:], steps=MAX_H)  # shape (MAX_H, n_stores)
+        return {
+            s: np.asarray(fc[:, i], dtype=float)
+            for i, s in enumerate(store_cols)
+        }
+    except Exception:
+        return {
+            s: _seasonal_naive_from_series(customers_wide[s].to_numpy(dtype=float), origin)
+            for s in store_cols
+        }
+
+
+def _build_customers_wide(dfs_by_store: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    """Build aligned Date index matrix: columns are stores, values are Num_Customers."""
+    merged: pd.DataFrame | None = None
+    for store in STORE_FILES.keys():
+        df = dfs_by_store[store][["Date", "Num_Customers"]].copy()
+        df = df.rename(columns={"Num_Customers": store})
+        merged = df if merged is None else merged.merge(df, on="Date", how="inner")
+
+    merged = merged.sort_values("Date").reset_index(drop=True)
+    return merged[[*STORE_FILES.keys()]]
+
+
+def build_global_var_maps(
+    dfs_by_store: dict[str, pd.DataFrame]
+) -> tuple[dict[str, dict[int, np.ndarray]], dict[str, np.ndarray]]:
+    """
+    Precompute global VAR predictions per backtest origin and for future horizon.
+    Returns:
+      - per_store_origin_preds[store][origin] = prediction vector
+      - per_store_future_preds[store] = prediction vector at origin=len(series)
+    """
+    customers_wide = _build_customers_wide(dfs_by_store)
+    origins = get_backtest_origins(len(customers_wide))
+
+    per_store_origin_preds = {s: {} for s in STORE_FILES.keys()}
+    for origin in origins:
+        preds_all = _var4_predict_all(customers_wide, origin)
+        for s in STORE_FILES.keys():
+            per_store_origin_preds[s][origin] = preds_all[s]
+
+    per_store_future_preds = _var4_predict_all(customers_wide, len(customers_wide))
+    return per_store_origin_preds, per_store_future_preds
+
+
 # ---------------------------------------------------------------------------
 # Linear Regression MV (direct multi-step, same lag features as RF/XGBoost)
 # ---------------------------------------------------------------------------
@@ -309,7 +375,10 @@ def get_backtest_origins(n: int) -> list[int]:
     return list(range(first_origin, latest_origin + 1))
 
 
-def run_mv_backtest(df: pd.DataFrame) -> pd.DataFrame:
+def run_mv_backtest(
+    df: pd.DataFrame,
+    var_preds_by_origin: dict[int, np.ndarray] | None = None,
+) -> pd.DataFrame:
     rows = []
     series  = df["Num_Customers"].to_numpy(dtype=float)
     origins = get_backtest_origins(len(df))
@@ -318,9 +387,14 @@ def run_mv_backtest(df: pd.DataFrame) -> pd.DataFrame:
         y_future = series[origin: origin + MAX_H]
 
         # --- ARIMAX and VAR (no lag set: fixed "-") ---
+        var_pred = (
+            var_preds_by_origin[origin]
+            if var_preds_by_origin is not None and origin in var_preds_by_origin
+            else _var_predict(df, origin)
+        )
         fixed_preds = [
             ("ARIMAX", "-", _arimax_predict(df, origin, for_future=False)),
-            ("VAR",    "-", _var_predict(df, origin)),
+            ("VAR",    "-", var_pred),
         ]
         for method_name, lag_name, pred_vec in fixed_preds:
             for h in HORIZONS:
@@ -355,7 +429,7 @@ def run_mv_backtest(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# Metric aggregation  (median per split, R2 global — same approach as univariate)
+# Metric aggregation  (median per split — same approach as univariate)
 # ---------------------------------------------------------------------------
 
 def aggregate_metrics(pred_df: pd.DataFrame) -> pd.DataFrame:
@@ -388,18 +462,6 @@ def aggregate_metrics(pred_df: pd.DataFrame) -> pd.DataFrame:
         .count().reset_index(name="Splits")
     )
     out = counts.merge(agg, on=["Store", "Method", "LagSet", "Horizon"])
-
-    # 3. R2 over all splits combined
-    r2_rows = []
-    for keys, grp in pred_df.groupby(["Store", "Method", "LagSet", "Horizon"]):
-        r2_rows.append({
-            "Store": keys[0], "Method": keys[1], "LagSet": keys[2], "Horizon": keys[3],
-            "R2": round(r2(
-                grp["y_true"].to_numpy(dtype=float),
-                grp["y_pred"].to_numpy(dtype=float)
-            ), 4),
-        })
-    out = out.merge(pd.DataFrame(r2_rows), on=["Store", "Method", "LagSet", "Horizon"])
 
     return out.sort_values(["Store", "Horizon", "NMAE", "MAE"]).reset_index(drop=True)
 
@@ -448,10 +510,18 @@ def choose_best_method(agg: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def forecast_next7_mv(df: pd.DataFrame, method: str, lag_set: str) -> np.ndarray:
+def forecast_next7_mv(
+    df: pd.DataFrame,
+    method: str,
+    lag_set: str,
+    store_name: str | None = None,
+    var_future_preds: dict[str, np.ndarray] | None = None,
+) -> np.ndarray:
     if method == "ARIMAX":
         return _arimax_predict(df, len(df), for_future=True)
     if method == "VAR":
+        if store_name is not None and var_future_preds is not None and store_name in var_future_preds:
+            return var_future_preds[store_name]
         return _var_predict(df, len(df))
     lags = LAG_SETS_MV[lag_set]
     if method == "RandomForest_MV":
@@ -472,7 +542,7 @@ def main():
     dfs_by_store: dict[str, pd.DataFrame] = {}
 
     print("=" * 90)
-    print(" MULTIVARIATE FORECASTING - ARIMAX, VAR, LinearReg MV, RandomForest MV, XGBoost MV")
+    print(" MULTIVARIATE FORECASTING - ARIMAX, VAR(4 stores), LinearReg MV, RandomForest MV, XGBoost MV")
     print("=" * 90)
     print(f"Backtesting rolling splits : {N_BACKTEST_SPLITS}")
     print("Extra features             : TouristEvent, Num_Employees, DayOfWeek\n")
@@ -485,7 +555,10 @@ def main():
             f"dates={df['Date'].min().date()} to {df['Date'].max().date()}"
         )
 
-        pred_df = run_mv_backtest(df)
+    global_var_backtest, global_var_future = build_global_var_maps(dfs_by_store)
+
+    for store_name, df in dfs_by_store.items():
+        pred_df = run_mv_backtest(df, var_preds_by_origin=global_var_backtest.get(store_name))
         pred_df["Store"] = store_name
         all_predictions.append(pred_df)
 
@@ -503,7 +576,13 @@ def main():
         chosen_method = str(best_h7.iloc[0]["Method"]) if not best_h7.empty else "RandomForest_MV"
         chosen_lagset = str(best_h7.iloc[0]["LagSet"]) if not best_h7.empty else "mv_lag7"
 
-        preds    = forecast_next7_mv(df, chosen_method, chosen_lagset)
+        preds    = forecast_next7_mv(
+            df,
+            chosen_method,
+            chosen_lagset,
+            store_name=store_name,
+            var_future_preds=global_var_future,
+        )
         last_date = df["Date"].max()
 
         for h in HORIZONS:
@@ -529,7 +608,7 @@ def main():
     next7_df.to_csv(out_next7, index=False)
 
     print("\nBest MV method by store and horizon (NMAE then MAE):")
-    display_cols = ["Store", "Horizon", "Method", "LagSet", "NMAE", "MAE", "R2"]
+    display_cols = ["Store", "Horizon", "Method", "LagSet", "NMAE", "MAE"]
     if "Improvement_vs_SeasonalNaive7_pct" in best_df.columns:
         display_cols.append("Improvement_vs_SeasonalNaive7_pct")
     print(best_df[display_cols])
