@@ -1,6 +1,6 @@
 import pandas as pd
 
-from otimizacao import Group, STORE_PARAMS, build_day_option
+from otimizacao_metaheuristica import Group, STORE_PARAMS, build_day_option
 
 PR = [0.00, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30]
 X = [4, 0, 8, 20, 0, 4, 3]
