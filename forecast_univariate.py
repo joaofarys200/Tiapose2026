@@ -349,10 +349,13 @@ def main():
 
     next7_df = pd.DataFrame(next7_rows)
 
-    out_predictions = Path("univariate_backtest_all_splits.csv")
-    out_metrics = Path("univariate_metrics_summary.csv")
-    out_best = Path("univariate_best_methods.csv")
-    out_next7 = Path("univariate_next7.csv")
+    out_dir = Path("csv/forecast/univariate")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    out_predictions = out_dir / "univariate_backtest_all_splits.csv"
+    out_metrics = out_dir / "univariate_metrics_summary.csv"
+    out_best = out_dir / "univariate_best_methods.csv"
+    out_next7 = out_dir / "univariate_next7.csv"
 
     predictions_df.to_csv(out_predictions, index=False)
     metrics_df.to_csv(out_metrics, index=False)

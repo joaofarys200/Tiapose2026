@@ -658,7 +658,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--forecast-file",
-        default="multivariate_next7.csv",
+        default="csv/forecast/multivariate/multivariate_next7.csv",
         help="CSV com previsões",
     )
     parser.add_argument(

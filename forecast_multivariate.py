@@ -565,7 +565,7 @@ def main():
     predictions_df = pd.concat(all_predictions, ignore_index=True)
     metrics_df = aggregate_metrics(predictions_df)
     metrics_df = add_improvement_vs_seasonal(
-        metrics_df, Path("univariate_metrics_summary.csv")
+        metrics_df, Path("csv/forecast/univariate/univariate_metrics_summary.csv")
     )
     best_df = choose_best_method(metrics_df)
 
@@ -597,10 +597,13 @@ def main():
 
     next7_df = pd.DataFrame(next7_rows)
 
-    out_predictions = Path("multivariate_backtest_all_splits.csv")
-    out_metrics     = Path("multivariate_metrics_summary.csv")
-    out_best        = Path("multivariate_best_methods.csv")
-    out_next7       = Path("multivariate_next7.csv")
+    out_dir = Path("csv/forecast/multivariate")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    out_predictions = out_dir / "multivariate_backtest_all_splits.csv"
+    out_metrics     = out_dir / "multivariate_metrics_summary.csv"
+    out_best        = out_dir / "multivariate_best_methods.csv"
+    out_next7       = out_dir / "multivariate_next7.csv"
 
     predictions_df.to_csv(out_predictions, index=False)
     metrics_df.to_csv(out_metrics, index=False)
