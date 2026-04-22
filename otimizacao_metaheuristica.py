@@ -663,7 +663,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--output-prefix",
-        default="metaheuristica",
+        default="csv/optimization/metaheuristica",
         help="Prefixo para ficheiros de saída",
     )
     parser.add_argument(
@@ -678,6 +678,10 @@ def main() -> None:
         help="Peso do lucro no O3, com valor entre 0 e 1.",
     )
     args = parser.parse_args()
+
+    output_prefix_path = Path(args.output_prefix)
+    output_prefix_path.parent.mkdir(parents=True, exist_ok=True)
+    output_prefix = str(output_prefix_path)
 
     forecast_file = Path(args.forecast_file)
     if not forecast_file.exists():
@@ -720,7 +724,7 @@ def main() -> None:
             feasible = solution.total_units <= UNITS_CAP
 
             if args.save_all_plans:
-                out_file = f"{args.output_prefix}_{objective}_{method}_plan.csv"
+                out_file = f"{output_prefix}_{objective}_{method}_plan.csv"
                 plan_df.to_csv(out_file, index=False)
                 print(f"  Plan: {out_file}")
 
@@ -757,7 +761,7 @@ def main() -> None:
         key: [[int(it), float(fit)] for it, fit in conv]
         for key, conv in convergence_data.items()
     }
-    conv_file = f"{args.output_prefix}_convergence.json"
+    conv_file = f"{output_prefix}_convergence.json"
     with open(conv_file, "w") as f:
         json.dump(convergence_json, f, indent=2)
     print(f"\nConvergence saved: {conv_file}")
@@ -770,7 +774,7 @@ def main() -> None:
     print("\n" + summary.to_string(index=False))
 
     # Guardar resumo principal
-    summary_file = f"{args.output_prefix}_summary.csv"
+    summary_file = f"{output_prefix}_summary.csv"
     summary.to_csv(summary_file, index=False)
     print(f"\nSummary saved: {summary_file}")
 
@@ -784,13 +788,13 @@ def main() -> None:
         best_plan_frames.append(best_result["plan_df"])
 
     best_plans_df = pd.concat(best_plan_frames, ignore_index=True)
-    best_plans_file = f"{args.output_prefix}_best_plans.csv"
+    best_plans_file = f"{output_prefix}_best_plans.csv"
     best_plans_df.to_csv(best_plans_file, index=False)
     print(f"Best plans saved: {best_plans_file}")
 
     # Guardar visualizações
-    plot_files = save_convergence_plots(convergence_data, args.output_prefix)
-    dashboard_file = save_summary_visualization(summary, args.output_prefix)
+    plot_files = save_convergence_plots(convergence_data, output_prefix)
+    dashboard_file = save_summary_visualization(summary, output_prefix)
     print("\nVisualization files:")
     for file_name in plot_files:
         print(f" - {file_name}")

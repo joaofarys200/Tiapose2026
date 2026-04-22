@@ -13,10 +13,10 @@ from statsmodels.tsa.holtwinters import ExponentialSmoothing
 warnings.filterwarnings("ignore")
 
 STORE_FILES = {
-    "Baltimore": "baltimore.csv",
-    "Lancaster": "lancaster.csv",
-    "Philadelphia": "philadelphia.csv",
-    "Richmond": "richmond.csv",
+    "Baltimore": "csv/stores/baltimore.csv",
+    "Lancaster": "csv/stores/lancaster.csv",
+    "Philadelphia": "csv/stores/philadelphia.csv",
+    "Richmond": "csv/stores/richmond.csv",
 }
 METHODS = ["SeasonalNaive7", "ETS_HoltWinters", "ARIMA", "RandomForest", "XGBoost"]
 HORIZONS = (1, 2, 3, 4, 5, 6, 7)

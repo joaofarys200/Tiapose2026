@@ -123,8 +123,8 @@ def main():
     parser = argparse.ArgumentParser(description="Validação metaheurística contra slides")
     parser.add_argument(
         "--prefix",
-        default="metaheuristica_clean",
-        help="Prefixo dos ficheiros a validar (default: metaheuristica_clean)",
+        default="csv/optimization/metaheuristica_clean",
+        help="Prefixo dos ficheiros a validar (default: csv/optimization/metaheuristica_clean)",
     )
     parser.add_argument(
         "--file",
@@ -145,6 +145,9 @@ def main():
     print("=" * 80)
     print("VALIDAÇÃO METAHEURÍSTICA CONTRA SLIDES")
     print("=" * 80)
+
+    out_dir = Path("csv/optimization")
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     if not test_files:
         print(f"\n❌ Nenhum ficheiro encontrado para o prefixo: {args.prefix}")
@@ -169,14 +172,14 @@ def main():
             for objective, part_df in df.groupby("Objective"):
                 result = validate_plan_df_against_slides(part_df.copy(), expected)
                 print_validation_result(str(objective), result)
-                output_file = f"validacao_{path.stem}_{str(objective).lower()}.csv"
+                output_file = out_dir / f"validacao_{path.stem}_{str(objective).lower()}.csv"
                 pd.DataFrame(result["validation_rows"]).to_csv(output_file, index=False)
                 print(f"Detalhes guardados em: {output_file}")
         else:
             result = validate_plan_df_against_slides(df, expected)
             label = str(df["Objective"].iloc[0]) if "Objective" in df.columns else path.stem
             print_validation_result(label, result)
-            output_file = f"validacao_{path.stem}.csv"
+            output_file = out_dir / f"validacao_{path.stem}.csv"
             pd.DataFrame(result["validation_rows"]).to_csv(output_file, index=False)
             print(f"Detalhes guardados em: {output_file}")
 

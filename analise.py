@@ -15,10 +15,10 @@ plt.rcParams['axes.titleweight'] = 'bold'
 sns.set_style("whitegrid")
 
 STORE_FILES = {
-    'Baltimore': 'baltimore.csv',
-    'Lancaster': 'lancaster.csv',
-    'Philadelphia': 'philadelphia.csv',
-    'Richmond': 'richmond.csv'
+    'Baltimore': 'csv/stores/baltimore.csv',
+    'Lancaster': 'csv/stores/lancaster.csv',
+    'Philadelphia': 'csv/stores/philadelphia.csv',
+    'Richmond': 'csv/stores/richmond.csv'
 }
 
 Z_OUTLIER_THRESHOLD = 3

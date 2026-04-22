@@ -14,10 +14,10 @@ from statsmodels.tsa.vector_ar.var_model import VAR
 warnings.filterwarnings("ignore")
 
 STORE_FILES = {
-    "Baltimore": "baltimore.csv",
-    "Lancaster": "lancaster.csv",
-    "Philadelphia": "philadelphia.csv",
-    "Richmond": "richmond.csv",
+    "Baltimore": "csv/stores/baltimore.csv",
+    "Lancaster": "csv/stores/lancaster.csv",
+    "Philadelphia": "csv/stores/philadelphia.csv",
+    "Richmond": "csv/stores/richmond.csv",
 }
 
 HORIZONS = (1, 2, 3, 4, 5, 6, 7)

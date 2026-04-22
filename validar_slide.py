@@ -1,4 +1,5 @@
 import pandas as pd
+from pathlib import Path
 
 from otimizacao_metaheuristica import Group, STORE_PARAMS, build_day_option
 
@@ -70,10 +71,16 @@ def main() -> None:
     daily = pd.concat([b_day, p_day], ignore_index=True)
     summary = pd.DataFrame([b_sum, p_sum])
 
-    daily.to_csv("validation_slide_daily.csv", index=False)
-    summary.to_csv("validation_slide_summary.csv", index=False)
+    out_dir = Path("csv/optimization")
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    print("OK: validation_slide_daily.csv e validation_slide_summary.csv gerados")
+    daily_file = out_dir / "validation_slide_daily.csv"
+    summary_file = out_dir / "validation_slide_summary.csv"
+
+    daily.to_csv(daily_file, index=False)
+    summary.to_csv(summary_file, index=False)
+
+    print(f"OK: {daily_file} e {summary_file} gerados")
     print()
     print(summary.to_string(index=False))
 

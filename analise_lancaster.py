@@ -17,7 +17,7 @@ sns.set_style("whitegrid")
 
 def load_data():
     """Carrega o CSV da loja Lancaster e cria features temporais."""
-    df = pd.read_csv('lancaster.csv', sep=',')
+    df = pd.read_csv('csv/stores/lancaster.csv', sep=',')
     df['Date'] = pd.to_datetime(df['Date'])
     df['Store'] = 'Lancaster'
 
