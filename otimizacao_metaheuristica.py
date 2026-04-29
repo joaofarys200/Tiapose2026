@@ -690,7 +690,12 @@ def save_convergence_plots(convergence_data: dict, output_prefix: str) -> list[s
         "simulated_annealing": "tab:red",
     }
 
-    objectives = sorted({key.rsplit("_", 2)[0] for key in convergence_data.keys()})
+    # Avoid splitting by underscores because method names (e.g., monte_carlo)
+    # also contain underscores.
+    known_objectives = ["o1", "o2", "o3_weighted", "o3_pareto"]
+    objectives = [
+        obj for obj in known_objectives if any(key.startswith(f"{obj}_") for key in convergence_data.keys())
+    ]
     for objective in objectives:
         plt.figure(figsize=(10, 6))
         has_series = False
