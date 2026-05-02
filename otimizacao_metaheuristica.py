@@ -41,7 +41,7 @@ DEFAULT_NSGA2_POP_SIZE = 40
 DEFAULT_GA_POP_SIZE = 40       # populacao GA; geracoes = total_evals / pop_size
 DEFAULT_GA_TOTAL_EVALS = 1000  # equivalente a 1000 iteracoes dos outros metodos
 DEFAULT_GA_CROSSOVER_RATE = 0.8
-DEFAULT_GA_MUTATION_RATE = 0.15
+DEFAULT_GA_MUTATION_RATE = 0.33  # mutationChance do professor (rbga genalg)
 DEFAULT_GA_TOURNAMENT_K = 3
 DEFAULT_OMEGA = 0.7  # peso do lucro no O3; restante peso vai para RH
 NEIGHBOR_PERTURB_PCT = 0.20
@@ -50,7 +50,6 @@ PR_MIN_INT = 0
 PR_MAX_INT = 30
 
 UNITS_CAP = 10000
-PENALTY_WEIGHT = 1000.0  # Penalidade por unidade excedida
 
 
 def pr_from_int(pr_int: int) -> float:
@@ -248,8 +247,8 @@ def repair_solution(sol: Solution, groups: list[Group], units_cap: int = UNITS_C
         changed = False
         for g in groups:
             base_idx = g.idx * 3
-            new_x = max(0, int(round(repaired.values[base_idx + 1] * 0.95)))
-            new_j = max(0, int(round(repaired.values[base_idx + 2] * 0.95)))
+            new_x = int(repaired.values[base_idx + 1] * 0.95)  # truncamento garante 1->0
+            new_j = int(repaired.values[base_idx + 2] * 0.95)
             if new_x != repaired.values[base_idx + 1] or new_j != repaired.values[base_idx + 2]:
                 changed = True
             repaired.values[base_idx + 1] = new_x
@@ -347,32 +346,29 @@ def evaluate_solution(
     # O2 e O3 têm restrição de cap de unidades (O3 = "Maximize O2 and Minimize HR").
     feasible = (total_units <= UNITS_CAP) if has_cap else True
 
-    # Penalty para O2/O3 quando infeasible.
-    if has_cap and not feasible and constraint_mode != "none":
-        penalty = 1e12 if constraint_mode == "penalty" else PENALTY_WEIGHT * (total_units - UNITS_CAP)
-    else:
-        penalty = 0.0
+    # Death penalty: solução inviável é imediatamente rejeitada com fitness -inf.
+    if has_cap and not feasible and constraint_mode == "penalty":
+        return -math.inf, total_units, total_hr, feasible
 
     if objective == "o1":
         # O1: maximizar lucro semanal total (sem restrição de cap).
         fitness = float(total_profit)
     elif objective == "o2":
         # O2: maximizar lucro com hard constraint de 10,000 unidades.
-        fitness = float(total_profit) - penalty
+        fitness = float(total_profit)
     elif objective == "o3_weighted":
         # O3 weighted: "Maximize O2 and Minimize HR" via soma ponderada normalizada.
-        # O cap é herdado de O2 (penalty aplicada acima).
-        # Normalização: guia sugere -w*f1 + K*(1-w)*f2 para equalizar escalas.
+        # O cap é herdado de O2 (death penalty aplicada acima).
+        # profit_ref calibrado para o lucro real máximo com cap de 10000 unidades (~500 após Ws).
+        # hr_ref = número máximo de trabalhadores por semana (28 grupos × ~16 workers máx ≈ 450).
         omega = max(0.0, min(1.0, omega))
-        profit_ref = 15000.0   # ordem de grandeza do lucro máximo esperado
-        hr_ref = 450.0         # ordem de grandeza do HR total máximo esperado
+        profit_ref = 500.0    # lucro máximo real observado em O2 repair (após Ws)
+        hr_ref = 450.0        # HR total máximo esperado
         fitness = (omega * (float(total_profit) / profit_ref)
-                   - (1.0 - omega) * (float(total_hr) / hr_ref)
-                   - penalty)
+                   - (1.0 - omega) * (float(total_hr) / hr_ref))
     elif objective == "o3_pareto":
         # O3 Pareto: NSGA-II usa evaluate_profit_units_hr diretamente; retorna lucro bruto.
-        # O cap é aplicado via penalty no NSGA-II (ver evaluate_profit_units_hr).
-        fitness = float(total_profit) - penalty
+        fitness = float(total_profit)
     else:
         fitness = float(total_profit)
 
@@ -438,12 +434,11 @@ class MonteCarloOptimizer:
         self.convergence = []  # [(iteration, best_fitness), ...]
 
     def optimize(self) -> Solution:
-        # Bootstrap: iniciar com solução conservadora (baixo PR, poucos workers)
+        # Monte Carlo: pure random sampling (mcsearch do professor)
+        # Gera N soluções independentes e mantém a melhor.
         has_cap = self.objective in ("o2", "o3_weighted")
-        self.best_solution = Solution(values=[0.1, 2, 2] * len(self.groups))
-        if has_cap and self.constraint_mode == "penalty":
-            self.best_solution = generate_random_feasible_solution(self.groups)
-        elif has_cap and self.constraint_mode == "repair":
+        self.best_solution = generate_random_solution(self.groups)
+        if has_cap and self.constraint_mode in ("repair", "penalty"):
             self.best_solution = repair_solution(self.best_solution, self.groups)
         fitness, units, hr, _ = evaluate_solution(
             self.best_solution, self.groups, self.objective, self.omega, self.constraint_mode
@@ -453,26 +448,14 @@ class MonteCarloOptimizer:
         self.best_solution.total_hr = hr
 
         for iteration in range(self.iterations):
-            # Estratégia: misturar aleatório puro com perturbação do melhor
-            if random.random() < 0.3:
-                # 30%: exploração pura (aleatório)
-                if has_cap and self.constraint_mode == "penalty":
-                    candidate = generate_random_feasible_solution(self.groups)
-                else:
-                    candidate = generate_random_solution(self.groups)
-            else:
-                # 70%: perturbação controlada do melhor
-                candidate = self.best_solution.copy()
-                num_perturb = random.randint(2, 3)
-                for _ in range(num_perturb):
-                    candidate = generate_neighbor_on_triplet(candidate, self.groups)
+            candidate = generate_random_solution(self.groups)
             if has_cap and self.constraint_mode == "repair":
                 candidate = repair_solution(candidate, self.groups)
 
             fitness, units, hr, _ = evaluate_solution(
                 candidate, self.groups, self.objective, self.omega, self.constraint_mode
             )
-            
+
             if fitness > self.best_solution.fitness_o1:
                 self.best_solution = candidate.copy()
                 self.best_solution.fitness_o1 = fitness
@@ -505,11 +488,8 @@ class HillClimbingOptimizer:
 
     def optimize(self) -> Solution:
         has_cap = self.objective in ("o2", "o3_weighted")
-        if has_cap and self.constraint_mode == "penalty":
-            self.best_solution = generate_random_feasible_solution(self.groups)
-        else:
-            self.best_solution = generate_random_solution(self.groups)
-        if has_cap and self.constraint_mode == "repair":
+        self.best_solution = generate_random_solution(self.groups)
+        if has_cap and self.constraint_mode in ("repair", "penalty"):
             self.best_solution = repair_solution(self.best_solution, self.groups)
         fitness, units, hr, _ = evaluate_solution(
             self.best_solution, self.groups, self.objective, self.omega, self.constraint_mode
@@ -571,11 +551,8 @@ class SimulatedAnnealingOptimizer:
 
     def optimize(self) -> Solution:
         has_cap = self.objective in ("o2", "o3_weighted")
-        if has_cap and self.constraint_mode == "penalty":
-            current = generate_random_feasible_solution(self.groups)
-        else:
-            current = generate_random_solution(self.groups)
-        if has_cap and self.constraint_mode == "repair":
+        current = generate_random_solution(self.groups)
+        if has_cap and self.constraint_mode in ("repair", "penalty"):
             current = repair_solution(current, self.groups)
         fitness, units, hr, _ = evaluate_solution(
             current, self.groups, self.objective, self.omega, self.constraint_mode
@@ -831,11 +808,8 @@ class GeneticAlgorithmOptimizer:
         has_cap = self.objective in ("o2", "o3_weighted")
         pop: list[Solution] = []
         for _ in range(self.pop_size):
-            if has_cap and self.constraint_mode == "penalty":
-                sol = generate_random_feasible_solution(self.groups)
-            else:
-                sol = generate_random_solution(self.groups)
-            if has_cap and self.constraint_mode == "repair":
+            sol = generate_random_solution(self.groups)
+            if has_cap and self.constraint_mode in ("repair", "penalty"):
                 sol = repair_solution(sol, self.groups)
             pop.append(sol)
         return pop
@@ -1047,39 +1021,49 @@ def save_convergence_plots(convergence_data: dict, output_prefix: str) -> list[s
         obj for obj in known_objectives if any(key.startswith(f"{obj}_") for key in convergence_data.keys())
     ]
     for objective in objectives:
-        plt.figure(figsize=(10, 6))
-        has_series = False
+        # Repair/none e penalty têm escalas incompatíveis — usar 2 subplots lado a lado.
+        modes_groups = [("repair", "none"), ("penalty",)]
+        has_objective_data = False
+        fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+        fig.suptitle(f"Convergência - {objective.upper()}", fontsize=14)
 
-        for method in ["monte_carlo", "hill_climbing", "simulated_annealing", "genetic_algorithm", "nsga_ii"]:
-            for constraint_mode in ["repair", "penalty", "none"]:
-                key = f"{objective}_{method}_{constraint_mode}"
-                if key not in convergence_data or not convergence_data[key]:
-                    continue
+        for ax, modes in zip(axes, modes_groups):
+            has_series = False
+            for method in ["monte_carlo", "hill_climbing", "simulated_annealing", "genetic_algorithm", "nsga_ii"]:
+                for constraint_mode in modes:
+                    key = f"{objective}_{method}_{constraint_mode}"
+                    if key not in convergence_data or not convergence_data[key]:
+                        continue
 
-                iterations = [point[0] for point in convergence_data[key]]
-                scores = [point[1] for point in convergence_data[key]]
-                linestyle = "-" if constraint_mode in {"repair", "none"} else "--"
-                plt.plot(
-                    iterations,
-                    scores,
-                    label=f"{method_labels[method]} ({constraint_mode})",
-                    color=method_colors[method],
-                    linestyle=linestyle,
-                    linewidth=2,
-                )
-                has_series = True
+                    iterations = [point[0] for point in convergence_data[key]]
+                    scores = [point[1] for point in convergence_data[key]]
+                    linestyle = "-"
+                    ax.plot(
+                        iterations,
+                        scores,
+                        label=f"{method_labels[method]}",
+                        color=method_colors[method],
+                        linestyle=linestyle,
+                        linewidth=2,
+                    )
+                    has_series = True
+                    has_objective_data = True
 
-        if not has_series:
+            mode_label = "Repair / None" if "repair" in modes or "none" in modes else "Penalty"
+            ax.set_title(mode_label)
+            ax.set_xlabel("Iteração")
+            ax.set_ylabel("Best Fitness")
+            ax.grid(True, alpha=0.3)
+            if has_series:
+                ax.legend()
+            else:
+                ax.set_visible(False)
+
+        if not has_objective_data:
             plt.close()
             continue
 
-        plt.title(f"Convergência - {objective.upper()}")
-        plt.xlabel("Iteração")
-        plt.ylabel("Best Fitness")
-        plt.grid(True, alpha=0.3)
-        plt.legend()
         plt.tight_layout()
-
         out_file = f"{output_prefix}_{objective}_convergence.png"
         plt.savefig(out_file, dpi=150, bbox_inches="tight")
         plt.close()
