@@ -362,8 +362,8 @@ def evaluate_solution(
         # profit_ref calibrado para o lucro real máximo com cap de 10000 unidades (~500 após Ws).
         # hr_ref = número máximo de trabalhadores por semana (28 grupos × ~16 workers máx ≈ 450).
         omega = max(0.0, min(1.0, omega))
-        profit_ref = 500.0    # lucro máximo real observado em O2 repair (após Ws)
-        hr_ref = 450.0        # HR total máximo esperado
+        profit_ref = 500.0    # lucro líquido máximo com cap (gross ~3800 - Ws_total 2990 ≈ 825; arredondado a 500 para margem)
+        hr_ref = 100.0        # HR máximo com cap de 10000 unidades (~93-97 observado; sem cap seria ~450)
         fitness = (omega * (float(total_profit) / profit_ref)
                    - (1.0 - omega) * (float(total_hr) / hr_ref))
     elif objective == "o3_pareto":
