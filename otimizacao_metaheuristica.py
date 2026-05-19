@@ -626,6 +626,8 @@ class NSGA2Optimizer:
         self.population_size = max(10, population_size)
         self.best_solution = None
         self.convergence = []
+        self.pareto_front_points: list[tuple[int, int]] = []  # (profit, hr) da fronteira final
+        self.pareto_front_history: list[tuple[int, list[tuple[int, int]]]] = []  # (geração, pontos)
 
     def _fast_non_dominated_sort(self, population: list[Solution], fitness: dict[int, tuple[int, int]]) -> list[list[int]]:
         domination_count = {i: 0 for i in range(len(population))}
@@ -710,10 +712,14 @@ class NSGA2Optimizer:
         # O3 herda o cap de O2: inicializa com soluções feasible.
         population = [generate_random_feasible_solution(self.groups) for _ in range(self.population_size)]
 
+        snap_interval = max(1, self.generations // 10)
         for generation in range(self.generations):
             fit = {i: evaluate_profit_units_hr(sol, self.groups)[::2] for i, sol in enumerate(population)}
             # fit[i] = (profit, hr)
             fronts = self._fast_non_dominated_sort(population, fit)
+            # Gravar snapshot da fronteira para visualização da evolução.
+            if generation % snap_interval == 0 or generation == self.generations - 1:
+                self.pareto_front_history.append((generation, [fit[i] for i in fronts[0]]))
             rank: dict[int, int] = {}
             crowd: dict[int, float] = {}
             for f_idx, front in enumerate(fronts):
@@ -759,6 +765,16 @@ class NSGA2Optimizer:
         best.total_units = int(best_units)
         best.total_hr = int(best_hr)
         self.best_solution = best
+
+        # Extrair fronteira de Pareto final para visualização 2D (profit, hr).
+        fit_final = {
+            i: (evaluate_profit_units_hr(sol, self.groups)[0], evaluate_profit_units_hr(sol, self.groups)[2])
+            for i, sol in enumerate(population)
+        }
+        fronts_final = self._fast_non_dominated_sort(population, fit_final)
+        if fronts_final:
+            self.pareto_front_points = [fit_final[i] for i in fronts_final[0]]
+
         return self.best_solution
 
 
@@ -994,6 +1010,72 @@ def solution_to_plan_df(
 
     df = pd.DataFrame(rows)
     return df
+
+
+def _pareto_sort(pts: list[tuple[int, int]]) -> tuple[list[int], list[int]]:
+    """Ordena pontos (profit, hr) por RH crescente; devolve (hrs, profits)."""
+    s = sorted((h, p) for p, h in pts)
+    return [x[0] for x in s], [x[1] for x in s]
+
+
+def save_pareto_front_plot(
+    pareto_points: list[tuple[int, int]],
+    output_prefix: str,
+    pareto_history: list[tuple[int, list[tuple[int, int]]]] | None = None,
+) -> str:
+    """Plota a fronteira de Pareto 2D do NSGA-II: X = RH total, Y = Lucro líquido.
+
+    Se pareto_history for fornecido, mostra a evolução por geração (cinzento claro
+    → azul escuro), à semelhança do opt-5-fes1.R da aula5.
+    """
+    if not pareto_points:
+        return ""
+
+    # Filtrar soluções com lucro positivo.
+    pos_final = [(p, h) for p, h in pareto_points if p > 0]
+    if pos_final:
+        pareto_points = pos_final
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    # --- Evolução por geração (cinzento → azul, como no R) ---
+    if pareto_history:
+        n_steps = len(pareto_history)
+        for step_idx, (gen, pts) in enumerate(pareto_history):
+            pos_pts = [(p, h) for p, h in pts if p > 0]
+            if not pos_pts:
+                continue
+            t = step_idx / max(1, n_steps - 1)          # 0 → 1
+            gray = 0.80 - 0.65 * t                       # claro → escuro
+            alpha = 0.20 + 0.55 * t
+            col = (gray, gray, gray)
+            sh, sp = _pareto_sort(pos_pts)
+            ax.plot(sh, sp, color=col, alpha=alpha, linewidth=1.0)
+            ax.scatter(sh, sp, color=col, s=12, alpha=alpha)
+
+    # --- Fronteira final ---
+    final_hrs, final_profits = _pareto_sort(pareto_points)
+    ax.scatter(final_hrs, final_profits, c="tab:blue", s=60, zorder=5,
+               label="Fronteira final (não dominadas)")
+    ax.plot(final_hrs, final_profits, color="tab:blue", linewidth=2.0, zorder=4)
+
+    best_profit_pt = max(pareto_points, key=lambda p: p[0])
+    min_hr_pt      = min(pareto_points, key=lambda p: p[1])
+    ax.scatter([best_profit_pt[1]], [best_profit_pt[0]], c="darkgreen", s=120, zorder=6,
+               label=f"Max Lucro ({best_profit_pt[0]:,} €)")
+    ax.scatter([min_hr_pt[1]], [min_hr_pt[0]], c="darkred", s=120, zorder=6,
+               label=f"Min RH ({min_hr_pt[1]})")
+
+    ax.set_xlabel("RH Total (trabalhador-dias)", fontsize=11)
+    ax.set_ylabel("Lucro Líquido Semanal (€)", fontsize=11)
+    ax.set_title("Fronteira de Pareto — O3 (NSGA-II)\nMaximizar Lucro  ×  Minimizar RH", fontsize=12)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=9)
+    plt.tight_layout()
+    out_file = f"{output_prefix}_o3_pareto_front.png"
+    plt.savefig(out_file, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_file
 
 
 def save_convergence_plots(convergence_data: dict, output_prefix: str) -> list[str]:
@@ -1249,6 +1331,7 @@ def main() -> None:
     run_rows: list[dict] = []
     scenario_rows: list[dict] = []
     convergence_data = {}
+    pareto_data: dict[str, list] = {}
 
     print("=" * 70)
     print("OTIMIZAÇÃO COM METAHEURÍSTICAS")
@@ -1315,6 +1398,8 @@ def main() -> None:
                             "total_profit": total_profit,
                             "feasible": int(feasible),
                             "convergence": optimizer.convergence,
+                            "pareto_front": getattr(optimizer, "pareto_front_points", []),
+                            "pareto_history": getattr(optimizer, "pareto_front_history", []),
                         }
                     )
 
@@ -1381,6 +1466,11 @@ def main() -> None:
                 )
 
                 convergence_data[f"{objective}_{method}_{constraint_mode}"] = best_run["convergence"]
+                if method == "nsga_ii":
+                    pareto_data[objective] = {
+                        "points": best_run.get("pareto_front", []),
+                        "history": best_run.get("pareto_history", []),
+                    }
 
     # Guardar resultados por execução
     runs_file = f"{output_prefix}_runs.csv"
@@ -1442,10 +1532,19 @@ def main() -> None:
     # Guardar visualizações
     plot_files = save_convergence_plots(convergence_data, output_prefix)
     dashboard_file = save_summary_visualization(summary, output_prefix)
+    pareto_plot_files: list[str] = []
+    for obj_key, pdata in pareto_data.items():
+        pts  = pdata.get("points", []) if isinstance(pdata, dict) else pdata
+        hist = pdata.get("history") if isinstance(pdata, dict) else None
+        pf = save_pareto_front_plot(pts, output_prefix, hist)
+        if pf:
+            pareto_plot_files.append(pf)
     print("\nVisualization files:")
     for file_name in plot_files:
         print(f" - {file_name}")
     print(f" - {dashboard_file}")
+    for file_name in pareto_plot_files:
+        print(f" - {file_name}")
 
 
 if __name__ == "__main__":
