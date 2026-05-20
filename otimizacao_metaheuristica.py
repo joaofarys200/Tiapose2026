@@ -272,9 +272,13 @@ def generate_neighbor_on_triplet(solution: Solution, groups: list[Group]) -> Sol
     j_upper_bound = math.ceil(group.customers / 6) if group.customers > 0 else 0
 
     # PR discreto em [0..30] com perturbação percentual multiplicativa.
+    # Garantia de deslocamento mínimo de ±1 para evitar estagnação em PR=0
+    # (ex: int(round(0 * scale)) = 0 sempre sem este ajuste).
     cur_pr_int = int(round(discretize_pr(float(neighbor.values[base_idx])) * 100))
     pr_scale = 1.0 + random.uniform(-NEIGHBOR_PERTURB_PCT, NEIGHBOR_PERTURB_PCT)
-    new_pr_int = int(round(cur_pr_int * pr_scale))
+    raw_dp = cur_pr_int * pr_scale - cur_pr_int
+    dp = math.copysign(max(1.0, abs(raw_dp)), raw_dp) if raw_dp != 0 else random.choice([-1, 1])
+    new_pr_int = cur_pr_int + int(round(dp))
     new_pr_int = max(PR_MIN_INT, min(PR_MAX_INT, new_pr_int))
     neighbor.values[base_idx] = pr_from_int(new_pr_int)
 
