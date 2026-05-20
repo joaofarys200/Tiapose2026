@@ -1357,15 +1357,24 @@ def main() -> None:
                     elif method == "hill_climbing":
                         optimizer = HillClimbingOptimizer(groups, objective, args.omega, constraint_mode, args.hc_iterations)
                     elif method == "simulated_annealing":
+                        # Parâmetros calibrados por objetivo (grid search 5 runs × 40 combinações).
+                        # O2/O3: fitness em escala de centenas → precisa de T_initial muito maior que O1.
+                        SA_PARAMS_PER_OBJECTIVE = {
+                            "o2":           {"repair": (1000, 0.990), "penalty": (1000, 0.993)},
+                            "o3_weighted":  {"repair": (1000, 0.990), "penalty": (1000, 0.993)},
+                        }
+                        obj_params = SA_PARAMS_PER_OBJECTIVE.get(objective, {})
+                        sa_t_init  = obj_params.get(constraint_mode, (args.sa_temp_initial, args.sa_cooling_rate))[0]
+                        sa_c_rate  = obj_params.get(constraint_mode, (args.sa_temp_initial, args.sa_cooling_rate))[1]
                         optimizer = SimulatedAnnealingOptimizer(
                             groups,
                             objective,
                             args.omega,
                             constraint_mode,
                             args.sa_iterations,
-                            args.sa_temp_initial,
+                            sa_t_init,
                             args.sa_temp_final,
-                            args.sa_cooling_rate,
+                            sa_c_rate,
                         )
                     elif method == "genetic_algorithm":
                         optimizer = GeneticAlgorithmOptimizer(
