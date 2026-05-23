@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import seaborn as sns
+from pathlib import Path
 from scipy import stats
 import warnings
 warnings.filterwarnings('ignore')
@@ -13,6 +14,14 @@ plt.rcParams['font.size'] = 11
 plt.rcParams['axes.titlesize'] = 13
 plt.rcParams['axes.titleweight'] = 'bold'
 sns.set_style("whitegrid")
+
+BASE_DIR = Path(__file__).resolve().parent
+OUTPUT_DIR = BASE_DIR / 'csv' / 'analysis' / 'lojas' / 'richmond'
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def save_figure(fig, file_name):
+    fig.savefig(OUTPUT_DIR / file_name, dpi=150, bbox_inches='tight')
 
 
 def load_data():
@@ -62,6 +71,7 @@ ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
 ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
 plt.xticks(rotation=30)
 plt.tight_layout()
+save_figure(fig, 'serie_temporal_clientes.png')
 plt.show()
 
 fig, ax = plt.subplots(figsize=(10, 5))
@@ -73,6 +83,7 @@ ax.axvline(df['Num_Customers'].median(), color='orange', linestyle='--', linewid
 ax.legend()
 ax.set_title('Richmond - Distribuição de Num_Customers')
 plt.tight_layout()
+save_figure(fig, 'distribuicao_num_customers.png')
 plt.show()
 
 day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
@@ -87,6 +98,7 @@ ax.set_xticks(range(7))
 ax.set_xticklabels(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'])
 ax.set_title('Richmond - Média de Clientes por Dia da Semana')
 plt.tight_layout()
+save_figure(fig, 'media_clientes_dia_semana.png')
 plt.show()
 
 fig, ax = plt.subplots(figsize=(10, 5))
@@ -95,6 +107,7 @@ df_plot['Tipo'] = df_plot['IsWeekend'].map({0: 'Dia de Semana', 1: 'Fim de Seman
 sns.boxplot(data=df_plot, x='Tipo', y='Num_Customers', palette=['#64B5F6', '#EF9A9A'], ax=ax)
 ax.set_title('Richmond - Clientes: Dia de Semana vs Fim de Semana')
 plt.tight_layout()
+save_figure(fig, 'clientes_semana_vs_fim_semana.png')
 plt.show()
 
 fig, ax = plt.subplots(figsize=(10, 5))
@@ -109,6 +122,7 @@ ax.set_title('Richmond - Promoções vs Clientes')
 ax.set_xlabel('Pct_On_Sale')
 ax.set_ylabel('Num_Customers')
 plt.tight_layout()
+save_figure(fig, 'promocoes_vs_clientes.png')
 plt.show()
 
 print("\n=== IMPACTO DE TOURISTEVENT ===\n")
@@ -127,6 +141,8 @@ fig, ax = plt.subplots(figsize=(8, 6))
 sns.heatmap(corr, vmin=-1, vmax=1, center=0, annot=True, fmt='.2f', cmap='RdYlBu_r', square=True, ax=ax)
 ax.set_title('Richmond - Heatmap de Correlações')
 plt.tight_layout()
+save_figure(fig, 'heatmap_correlacoes.png')
 plt.show()
 
+print(f"\nGráficos guardados em: {OUTPUT_DIR}")
 print("\nEDA Richmond concluída.")

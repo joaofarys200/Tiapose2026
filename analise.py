@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import seaborn as sns
+from pathlib import Path
 from scipy import stats
 import warnings
 warnings.filterwarnings('ignore')
@@ -14,6 +15,10 @@ plt.rcParams['axes.titlesize'] = 13
 plt.rcParams['axes.titleweight'] = 'bold'
 sns.set_style("whitegrid")
 
+BASE_DIR = Path(__file__).resolve().parent
+OUTPUT_DIR = BASE_DIR / 'csv' / 'analysis' / 'multi_loja'
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
 STORE_FILES = {
     'Baltimore': 'csv/stores/baltimore.csv',
     'Lancaster': 'csv/stores/lancaster.csv',
@@ -22,6 +27,10 @@ STORE_FILES = {
 }
 
 Z_OUTLIER_THRESHOLD = 3
+
+
+def save_figure(fig, file_name):
+    fig.savefig(OUTPUT_DIR / file_name, dpi=150, bbox_inches='tight')
 
 
 def load_data():
@@ -88,6 +97,7 @@ def plot_acf_by_store(df_all, max_lag=28):
         print(f"{store:15s} | " + " | ".join([f"lag{lag}={val:.3f}" for lag, val in lag_summary.items()]))
 
     plt.tight_layout()
+    save_figure(fig, 'acf_num_customers_por_loja.png')
     plt.show()
 
 
@@ -104,6 +114,7 @@ def plot_customers_cross_store_heatmap(df_all):
     sns.heatmap(corr_customers, vmin=-1, vmax=1, center=0, annot=True, fmt='.2f', cmap='YlGnBu', square=True, ax=ax)
     ax.set_title('Num_Customers - Correlação Entre Lojas')
     plt.tight_layout()
+    save_figure(fig, 'heatmap_correlacao_clientes_entre_lojas.png')
     plt.show()
 
 
@@ -158,6 +169,7 @@ def plot_total_trend(df_all):
     axes[1].xaxis.set_major_locator(mdates.MonthLocator(interval=3))
     plt.xticks(rotation=30)
     plt.tight_layout()
+    save_figure(fig, 'tendencia_total_multi_loja.png')
     plt.show()
 
 
@@ -199,6 +211,7 @@ def plot_cross_store_comparisons(df_all):
     axes[1, 1].tick_params(axis='x', rotation=35)
 
     plt.tight_layout()
+    save_figure(fig, 'comparacoes_entre_lojas.png')
     plt.show()
 
 
@@ -233,6 +246,7 @@ def print_and_plot_tourist_event_impact(df_all):
     axes[1].tick_params(axis='x', rotation=20)
 
     plt.tight_layout()
+    save_figure(fig, 'impacto_tourist_event_multi_loja.png')
     plt.show()
 
 
@@ -257,6 +271,7 @@ def plot_correlations(df_all):
     axes[1].set_title('Correlação com Sales por Loja')
 
     plt.tight_layout()
+    save_figure(fig, 'correlacoes_globais_multi_loja.png')
     plt.show()
 
 
@@ -274,6 +289,7 @@ def main():
     plot_cross_store_comparisons(df_all)
     print_and_plot_tourist_event_impact(df_all)
     plot_correlations(df_all)
+    print(f"\nGráficos guardados em: {OUTPUT_DIR}")
 
 
 if __name__ == '__main__':
