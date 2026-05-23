@@ -45,6 +45,7 @@ DEFAULT_GA_MUTATION_RATE = 0.33  # mutationChance do professor (rbga genalg)
 DEFAULT_GA_TOURNAMENT_K = 3
 DEFAULT_OMEGA = 0.7  # peso do lucro no O3; restante peso vai para RH
 NEIGHBOR_PERTURB_PCT = 0.20
+ZERO_PERTURB_STD = 0.05
 
 PR_MIN_INT = 0
 PR_MAX_INT = 30
@@ -102,6 +103,7 @@ class Solution:
     fitness_o3: float = -1e9
     total_units: int = 0
     total_hr: int = 0
+    total_profit: int = 0
     feasible: bool = False
 
     def copy(self):
@@ -112,6 +114,7 @@ class Solution:
             fitness_o3=self.fitness_o3,
             total_units=self.total_units,
             total_hr=self.total_hr,
+            total_profit=self.total_profit,
             feasible=self.feasible,
         )
 
@@ -233,7 +236,11 @@ def is_solution_invalid(sol: Solution, groups: list[Group], units_cap: int = UNI
 
 
 def repair_solution(sol: Solution, groups: list[Group], units_cap: int = UNITS_CAP) -> Solution:
-    """Aplica repair multiplicando s = s * 0.95 até satisfazer o cap (abordagem do professor)."""
+    """Reduz localmente os blocos menos eficientes até satisfazer o cap.
+
+    Em vez de encolher todos os X/J por 0.95, remove capacidade apenas onde a
+    perda marginal de lucro por unidade reduzida é menor.
+    """
     repaired = sol.copy()
 
     while True:
@@ -243,20 +250,49 @@ def repair_solution(sol: Solution, groups: list[Group], units_cap: int = UNITS_C
         if total_units <= units_cap:
             break
 
-        # Reduz X e J de todos os grupos por 0.95 (arredondado ao inteiro)
-        changed = False
-        for g in groups:
-            base_idx = g.idx * 3
-            new_x = int(repaired.values[base_idx + 1] * 0.95)  # truncamento garante 1->0
-            new_j = int(repaired.values[base_idx + 2] * 0.95)
-            if new_x != repaired.values[base_idx + 1] or new_j != repaired.values[base_idx + 2]:
-                changed = True
-            repaired.values[base_idx + 1] = new_x
-            repaired.values[base_idx + 2] = new_j
+        overflow = total_units - units_cap
+        best_move: tuple[float, int, int, int, int] | None = None
 
-        # Se nada mudou (todos X=0, J=0) não é possível reparar mais
-        if not changed:
+        for group in groups:
+            base_idx = group.idx * 3
+            current_pr = float(repaired.values[base_idx])
+            current_x = int(repaired.values[base_idx + 1])
+            current_j = int(repaired.values[base_idx + 2])
+            current_opt = options[group.idx]
+
+            if current_x > 0:
+                candidate_opt = build_day_option(group, current_pr, current_x - 1, current_j)
+                units_drop = current_opt.units_total - candidate_opt.units_total
+                profit_drop = current_opt.daily_profit - candidate_opt.daily_profit
+                if units_drop > 0:
+                    score = profit_drop / units_drop
+                    move = (score, -units_drop, base_idx + 1, current_x - 1, current_j)
+                    best_move = move if best_move is None or move < best_move else best_move
+
+            if current_j > 0:
+                candidate_opt = build_day_option(group, current_pr, current_x, current_j - 1)
+                units_drop = current_opt.units_total - candidate_opt.units_total
+                profit_drop = current_opt.daily_profit - candidate_opt.daily_profit
+                if units_drop > 0:
+                    score = profit_drop / units_drop
+                    move = (score, -units_drop, base_idx + 2, current_x, current_j - 1)
+                    best_move = move if best_move is None or move < best_move else best_move
+
+        if best_move is None:
             break
+
+        _, _, move_idx, new_x, new_j = best_move
+        base_idx = (move_idx // 3) * 3
+        repaired.values[base_idx + 1] = new_x
+        repaired.values[base_idx + 2] = new_j
+
+        # Se o excesso for pequeno, permite sair logo após uma redução suficiente.
+        if overflow > 0:
+            decisions = solution_vector_to_decisions(repaired.values, groups)
+            options = decisions_to_options(decisions, groups)
+            total_units = sum(opt.units_total for opt in options.values())
+            if total_units <= units_cap:
+                break
 
     return repaired
 
@@ -271,32 +307,37 @@ def generate_neighbor_on_triplet(solution: Solution, groups: list[Group]) -> Sol
     x_upper_bound = math.ceil(group.customers / 7) if group.customers > 0 else 0
     j_upper_bound = math.ceil(group.customers / 6) if group.customers > 0 else 0
 
-    # PR discreto em [0..30] com perturbação percentual multiplicativa.
-    # Garantia de deslocamento mínimo de ±1 para evitar estagnação em PR=0
-    # (ex: int(round(0 * scale)) = 0 sempre sem este ajuste).
+    # Professor: se x>0, usar perturbação multiplicativa x*p com p~N(1, 0.05);
+    # se x==0, usar x+abs(p-1).
+    # Para PR, o ramo x==0 funciona naturalmente em contínuo e depois é discretizado a 1%.
     cur_pr_int = int(round(discretize_pr(float(neighbor.values[base_idx])) * 100))
-    pr_scale = 1.0 + random.uniform(-NEIGHBOR_PERTURB_PCT, NEIGHBOR_PERTURB_PCT)
-    raw_dp = cur_pr_int * pr_scale - cur_pr_int
-    dp = math.copysign(max(1.0, abs(raw_dp)), raw_dp) if raw_dp != 0 else random.choice([-1, 1])
-    new_pr_int = cur_pr_int + int(round(dp))
+    cur_pr = cur_pr_int / 100.0
+    if cur_pr > 0.0:
+        pr_scale = random.gauss(1.0, ZERO_PERTURB_STD)
+        new_pr = cur_pr * pr_scale
+    else:
+        new_pr = cur_pr + abs(random.gauss(1.0, ZERO_PERTURB_STD) - 1.0)
+    new_pr_int = int(round(discretize_pr(new_pr) * 100))
     new_pr_int = max(PR_MIN_INT, min(PR_MAX_INT, new_pr_int))
     neighbor.values[base_idx] = pr_from_int(new_pr_int)
 
-    # X e J: perturbação multiplicativa percentual (análogo ao gr= do R/SANN).
-    # Garantia de deslocamento mínimo de ±1 para evitar estagnação em inteiros pequenos
-    # (ex: int(round(1 * 0.9)) = 1 sem este ajuste).
+    # X e J: mesma lógica do quadro do professor.
+    # Se x>0, usar x*p com p~N(1, 0.05); se x==0, usar x+abs(y-1), y~N(1, 0.05).
+    # Como X e J são inteiros, o ramo x==0 arredonda por excesso para garantir saída de 0.
     cur_x = int(neighbor.values[base_idx + 1])
     cur_j = int(neighbor.values[base_idx + 2])
-    x_scale = 1.0 + random.uniform(-NEIGHBOR_PERTURB_PCT, NEIGHBOR_PERTURB_PCT)
-    j_scale = 1.0 + random.uniform(-NEIGHBOR_PERTURB_PCT, NEIGHBOR_PERTURB_PCT)
+    if cur_x > 0:
+        x_scale = random.gauss(1.0, ZERO_PERTURB_STD)
+        new_x = int(round(cur_x * x_scale))
+    else:
+        new_x = int(math.ceil(cur_x + abs(random.gauss(1.0, ZERO_PERTURB_STD) - 1.0)))
 
-    raw_dx = cur_x * x_scale - cur_x  # deslocamento multiplicativo puro
-    raw_dj = cur_j * j_scale - cur_j
-    dx = math.copysign(max(1.0, abs(raw_dx)), raw_dx) if raw_dx != 0 else random.choice([-1, 1])
-    dj = math.copysign(max(1.0, abs(raw_dj)), raw_dj) if raw_dj != 0 else random.choice([-1, 1])
+    if cur_j > 0:
+        j_scale = random.gauss(1.0, ZERO_PERTURB_STD)
+        new_j = int(round(cur_j * j_scale))
+    else:
+        new_j = int(math.ceil(cur_j + abs(random.gauss(1.0, ZERO_PERTURB_STD) - 1.0)))
 
-    new_x = cur_x + int(round(dx))
-    new_j = cur_j + int(round(dj))
     neighbor.values[base_idx + 1] = max(0, min(x_upper_bound, new_x))
     neighbor.values[base_idx + 2] = max(0, min(j_upper_bound, new_j))
 
@@ -316,7 +357,7 @@ def evaluate_solution(
     constraint_mode: str = "repair",
 ) -> tuple[float, int, int, bool]:
     """
-    Avalia S e devolve (fitness, total_units, total_hr, feasible).
+    Avalia S e devolve (fitness, total_units, total_hr, feasible, total_profit).
     O2 e O3 têm cap de 10,000 unidades (O3 = 'Maximize O2 and Minimize HR').
     Repair aplicado a O2 e O3_weighted em modo repair; death penalty para ambos em modo penalty.
     O1 não tem cap.
@@ -350,9 +391,16 @@ def evaluate_solution(
     # O2 e O3 têm restrição de cap de unidades (O3 = "Maximize O2 and Minimize HR").
     feasible = (total_units <= UNITS_CAP) if has_cap else True
 
-    # Death penalty: solução inviável é imediatamente rejeitada com fitness -inf.
+    # O2: penalização finita para manter gradiente útil perto do cap.
+    if objective == "o2" and not feasible and constraint_mode == "penalty":
+        overflow = float(total_units - UNITS_CAP)
+        penalty = 2.0 * overflow + 0.01 * (overflow ** 2)
+        fitness = float(total_profit) - penalty
+        return fitness, total_units, total_hr, feasible, int(total_profit)
+
+    # O3 mantém death penalty no modo penalty.
     if has_cap and not feasible and constraint_mode == "penalty":
-        return -math.inf, total_units, total_hr, feasible
+        return -math.inf, total_units, total_hr, feasible, 0
 
     if objective == "o1":
         # O1: maximizar lucro semanal total (sem restrição de cap).
@@ -376,7 +424,7 @@ def evaluate_solution(
     else:
         fitness = float(total_profit)
 
-    return fitness, total_units, total_hr, feasible
+    return fitness, total_units, total_hr, feasible, int(total_profit)
 
 
 # ============================================================================
@@ -422,6 +470,106 @@ def generate_random_feasible_solution(groups: list[Group], units_cap: int = UNIT
     return Solution(values=values)
 
 
+def _best_o2_addition_move(
+    sol: Solution,
+    groups: list[Group],
+    remaining_units: int,
+) -> tuple[float, int, int, int, int] | None:
+    decisions = solution_vector_to_decisions(sol.values, groups)
+    options = decisions_to_options(decisions, groups)
+    candidate_moves: list[tuple[float, int, int, int, int]] = []
+
+    for group in groups:
+        base_idx = group.idx * 3
+        pr = float(sol.values[base_idx])
+        x = int(sol.values[base_idx + 1])
+        j = int(sol.values[base_idx + 2])
+        current_opt = options[group.idx]
+
+        x_upper_bound = math.ceil(group.customers / 7) if group.customers > 0 else 0
+        j_upper_bound = math.ceil(group.customers / 6) if group.customers > 0 else 0
+
+        if x < x_upper_bound:
+            candidate_opt = build_day_option(group, pr, x + 1, j)
+            units_gain = candidate_opt.units_total - current_opt.units_total
+            profit_gain = candidate_opt.daily_profit - current_opt.daily_profit
+            if 0 < units_gain <= remaining_units and profit_gain > 0:
+                candidate_moves.append((profit_gain / units_gain, profit_gain, -units_gain, base_idx, x + 1, j))
+
+        if j < j_upper_bound:
+            candidate_opt = build_day_option(group, pr, x, j + 1)
+            units_gain = candidate_opt.units_total - current_opt.units_total
+            profit_gain = candidate_opt.daily_profit - current_opt.daily_profit
+            if 0 < units_gain <= remaining_units and profit_gain > 0:
+                candidate_moves.append((profit_gain / units_gain, profit_gain, -units_gain, base_idx, x, j + 1))
+
+    if not candidate_moves:
+        return None
+
+    candidate_moves.sort(reverse=True)
+    top_k = candidate_moves[:min(5, len(candidate_moves))]
+    return random.choice(top_k)
+
+
+def _fill_o2_slack(
+    sol: Solution,
+    groups: list[Group],
+    units_cap: int = UNITS_CAP,
+    max_steps: int | None = None,
+) -> Solution:
+    filled = sol.copy()
+    steps = max_steps if max_steps is not None else max(8, len(groups) * 2)
+
+    for _ in range(steps):
+        decisions = solution_vector_to_decisions(filled.values, groups)
+        options = decisions_to_options(decisions, groups)
+        total_units = sum(opt.units_total for opt in options.values())
+        remaining_units = units_cap - total_units
+        if remaining_units <= 0:
+            break
+
+        move = _best_o2_addition_move(filled, groups, remaining_units)
+        if move is None:
+            break
+
+        _, _, _, base_idx, new_x, new_j = move
+        filled.values[base_idx + 1] = new_x
+        filled.values[base_idx + 2] = new_j
+
+    return filled
+
+
+def generate_o2_seed_solution(groups: list[Group], units_cap: int = UNITS_CAP) -> Solution:
+    """Gera solução do O2 já viável e tipicamente próxima do cap."""
+    if random.random() < 0.35:
+        seed = generate_random_feasible_solution(groups, units_cap)
+    else:
+        seed = repair_solution(generate_random_solution(groups), groups, units_cap)
+    return _fill_o2_slack(seed, groups, units_cap)
+
+
+def generate_neighbor_o2(
+    solution: Solution,
+    groups: list[Group],
+    constraint_mode: str = "repair",
+    units_cap: int = UNITS_CAP,
+) -> Solution:
+    """Gera vizinho do O2 e volta a empurrá-lo para a fronteira viável útil."""
+    neighbor = solution.copy()
+    n_moves = random.randint(1, 3)
+    for _ in range(n_moves):
+        neighbor = generate_neighbor_on_triplet(neighbor, groups)
+
+    if constraint_mode == "repair":
+        if is_solution_invalid(neighbor, groups, units_cap):
+            neighbor = repair_solution(neighbor, groups, units_cap)
+        neighbor = _fill_o2_slack(neighbor, groups, units_cap, max_steps=max(3, len(groups) // 2))
+    elif not is_solution_invalid(neighbor, groups, units_cap):
+        neighbor = _fill_o2_slack(neighbor, groups, units_cap, max_steps=3)
+
+    return neighbor
+
+
 # ============================================================================
 # MONTE CARLO
 # ============================================================================
@@ -437,26 +585,39 @@ class MonteCarloOptimizer:
         self.best_solution = None
         self.convergence = []  # [(iteration, best_fitness), ...]
 
+    def _random_candidate(self) -> Solution:
+        """Monte Carlo deve amostrar o espaço alvo, não colapsar tudo no mesmo repair.
+
+        Em objetivos com cap e modo repair, gerar soluções já viáveis preserva
+        diversidade; caso contrário, manter a amostragem original.
+        """
+        if self.objective == "o2":
+            return generate_o2_seed_solution(self.groups)
+        if self.objective in ("o2", "o3_weighted") and self.constraint_mode == "repair":
+            return generate_random_feasible_solution(self.groups)
+        return generate_random_solution(self.groups)
+
     def optimize(self) -> Solution:
         # Monte Carlo: pure random sampling (mcsearch do professor)
         # Gera N soluções independentes e mantém a melhor.
         has_cap = self.objective in ("o2", "o3_weighted")
-        self.best_solution = generate_random_solution(self.groups)
+        self.best_solution = self._random_candidate()
         if has_cap and self.constraint_mode in ("repair", "penalty"):
             self.best_solution = repair_solution(self.best_solution, self.groups)
-        fitness, units, hr, _ = evaluate_solution(
+        fitness, units, hr, _, profit = evaluate_solution(
             self.best_solution, self.groups, self.objective, self.omega, self.constraint_mode
         )
         self.best_solution.fitness_o1 = fitness
         self.best_solution.total_units = units
         self.best_solution.total_hr = hr
+        self.best_solution.total_profit = profit
 
         for iteration in range(self.iterations):
-            candidate = generate_random_solution(self.groups)
+            candidate = self._random_candidate()
             if has_cap and self.constraint_mode == "repair":
                 candidate = repair_solution(candidate, self.groups)
 
-            fitness, units, hr, _ = evaluate_solution(
+            fitness, units, hr, _, profit = evaluate_solution(
                 candidate, self.groups, self.objective, self.omega, self.constraint_mode
             )
 
@@ -465,8 +626,9 @@ class MonteCarloOptimizer:
                 self.best_solution.fitness_o1 = fitness
                 self.best_solution.total_units = units
                 self.best_solution.total_hr = hr
+                self.best_solution.total_profit = profit
 
-            self.convergence.append((iteration, self.best_solution.fitness_o1))
+            self.convergence.append((iteration, self.best_solution.total_profit, self.best_solution.total_hr))
 
         return self.best_solution
 
@@ -488,25 +650,28 @@ class HillClimbingOptimizer:
 
     def get_neighbor(self, solution: Solution) -> Solution:
         """Gera vizinho por bloco (PR, X, J)."""
+        if self.objective == "o2":
+            return generate_neighbor_o2(solution, self.groups, self.constraint_mode)
         return generate_neighbor_on_triplet(solution, self.groups)
 
     def optimize(self) -> Solution:
         has_cap = self.objective in ("o2", "o3_weighted")
-        self.best_solution = generate_random_solution(self.groups)
+        self.best_solution = generate_o2_seed_solution(self.groups) if self.objective == "o2" else generate_random_solution(self.groups)
         if has_cap and self.constraint_mode in ("repair", "penalty"):
             self.best_solution = repair_solution(self.best_solution, self.groups)
-        fitness, units, hr, _ = evaluate_solution(
+        fitness, units, hr, _, profit = evaluate_solution(
             self.best_solution, self.groups, self.objective, self.omega, self.constraint_mode
         )
         self.best_solution.fitness_o1 = fitness
         self.best_solution.total_units = units
         self.best_solution.total_hr = hr
+        self.best_solution.total_profit = profit
 
         for iteration in range(self.iterations):
             neighbor = self.get_neighbor(self.best_solution)
             if has_cap and self.constraint_mode == "repair":
                 neighbor = repair_solution(neighbor, self.groups)
-            fitness, units, hr, _ = evaluate_solution(
+            fitness, units, hr, _, profit = evaluate_solution(
                 neighbor, self.groups, self.objective, self.omega, self.constraint_mode
             )
             
@@ -515,8 +680,9 @@ class HillClimbingOptimizer:
                 self.best_solution.fitness_o1 = fitness
                 self.best_solution.total_units = units
                 self.best_solution.total_hr = hr
+                self.best_solution.total_profit = profit
 
-            self.convergence.append((iteration, self.best_solution.fitness_o1))
+            self.convergence.append((iteration, self.best_solution.total_profit, self.best_solution.total_hr))
 
         return self.best_solution
 
@@ -551,19 +717,22 @@ class SimulatedAnnealingOptimizer:
 
     def get_neighbor(self, solution: Solution) -> Solution:
         """Gera vizinho com perturbação por bloco (PR, X, J)."""
+        if self.objective == "o2":
+            return generate_neighbor_o2(solution, self.groups, self.constraint_mode)
         return generate_neighbor_on_triplet(solution, self.groups)
 
     def optimize(self) -> Solution:
         has_cap = self.objective in ("o2", "o3_weighted")
-        current = generate_random_solution(self.groups)
+        current = generate_o2_seed_solution(self.groups) if self.objective == "o2" else generate_random_solution(self.groups)
         if has_cap and self.constraint_mode in ("repair", "penalty"):
             current = repair_solution(current, self.groups)
-        fitness, units, hr, _ = evaluate_solution(
+        fitness, units, hr, _, profit = evaluate_solution(
             current, self.groups, self.objective, self.omega, self.constraint_mode
         )
         current.fitness_o1 = fitness
         current.total_units = units
         current.total_hr = hr
+        current.total_profit = profit
 
         self.best_solution = current.copy()
 
@@ -572,12 +741,13 @@ class SimulatedAnnealingOptimizer:
             neighbor = self.get_neighbor(current)
             if has_cap and self.constraint_mode == "repair":
                 neighbor = repair_solution(neighbor, self.groups)
-            fitness_new, units_new, hr_new, _ = evaluate_solution(
+            fitness_new, units_new, hr_new, _, profit_new = evaluate_solution(
                 neighbor, self.groups, self.objective, self.omega, self.constraint_mode
             )
             neighbor.fitness_o1 = fitness_new
             neighbor.total_units = units_new
             neighbor.total_hr = hr_new
+            neighbor.total_profit = profit_new
 
             # Critério de Metropolis
             delta = fitness_new - current.fitness_o1
@@ -591,7 +761,7 @@ class SimulatedAnnealingOptimizer:
             temperature *= self.cooling_rate
             temperature = max(temperature, self.t_final)
 
-            self.convergence.append((iteration, self.best_solution.fitness_o1))
+            self.convergence.append((iteration, self.best_solution.total_profit, self.best_solution.total_hr))
 
         return self.best_solution
 
@@ -712,9 +882,38 @@ class NSGA2Optimizer:
                 child.values[base:base + 3] = parent_b.values[base:base + 3]
         return child
 
+    def _seed_solution(self) -> Solution:
+        """Mistura seeds lucro-orientadas do O2 com feasible aleatório para diversidade."""
+        if random.random() < 0.7:
+            return generate_o2_seed_solution(self.groups)
+        return generate_random_feasible_solution(self.groups)
+
+    def _replacement_solution(self) -> Solution:
+        """Reposição de filho inválido sem perder totalmente a diversidade da fronteira."""
+        if random.random() < 0.5:
+            return generate_o2_seed_solution(self.groups)
+        return generate_random_feasible_solution(self.groups)
+
+    def _mutate(self, solution: Solution) -> Solution:
+        """NSGA-II precisa de exploração mais ampla que uma única vizinhança local.
+
+        Aplicar 1-3 mutações por triplet aproxima melhor o comportamento de um
+        operador real-valued do exemplo do professor, preservando a representação.
+        """
+        mutated = solution.copy()
+        n_moves = random.randint(1, min(3, len(self.groups)))
+        for _ in range(n_moves):
+            if random.random() < 0.75:
+                mutated = generate_neighbor_o2(mutated, self.groups, constraint_mode="repair")
+            else:
+                mutated = generate_neighbor_on_triplet(mutated, self.groups)
+                if is_solution_invalid(mutated, self.groups):
+                    mutated = repair_solution(mutated, self.groups)
+        return mutated
+
     def optimize(self) -> Solution:
         # O3 herda o cap de O2: inicializa com soluções feasible.
-        population = [generate_random_feasible_solution(self.groups) for _ in range(self.population_size)]
+        population = [self._seed_solution() for _ in range(self.population_size)]
 
         snap_interval = max(1, self.generations // 10)
         for generation in range(self.generations):
@@ -737,10 +936,11 @@ class NSGA2Optimizer:
                 p2 = self._binary_tournament(population, rank, crowd)
                 child = self._crossover(p1, p2)
                 if random.random() < 0.7:
-                    child = generate_neighbor_on_triplet(child, self.groups)
-                # O3 tem cap de unidades: repair o offspring para manter feasibility.
+                    child = self._mutate(child)
+                # O3 tem cap de unidades. Em vez de colapsar o filho por repair
+                # global, reintroduzir diversidade com uma solução viável nova.
                 if is_solution_invalid(child, self.groups):
-                    child = repair_solution(child, self.groups)
+                    child = self._replacement_solution()
                 offspring.append(child)
 
             combined = population + offspring
@@ -759,8 +959,11 @@ class NSGA2Optimizer:
                     break
 
             population = new_population
-            best_profit = max(evaluate_profit_units_hr(sol, self.groups)[0] for sol in population)
-            self.convergence.append((generation, float(best_profit)))
+            best_phr = max(
+                (evaluate_profit_units_hr(sol, self.groups) for sol in population),
+                key=lambda x: x[0],
+            )
+            self.convergence.append((generation, int(best_phr[0]), int(best_phr[2])))
 
         # Seleção final para resumo: maior lucro; desempate por menor RH.
         best = max(population, key=lambda s: (evaluate_profit_units_hr(s, self.groups)[0], -evaluate_profit_units_hr(s, self.groups)[2]))
@@ -768,6 +971,7 @@ class NSGA2Optimizer:
         best.fitness_o1 = float(best_profit)
         best.total_units = int(best_units)
         best.total_hr = int(best_hr)
+        best.total_profit = int(best_profit)
         self.best_solution = best
 
         # Extrair fronteira de Pareto final para visualização 2D (profit, hr).
@@ -828,19 +1032,20 @@ class GeneticAlgorithmOptimizer:
         has_cap = self.objective in ("o2", "o3_weighted")
         pop: list[Solution] = []
         for _ in range(self.pop_size):
-            sol = generate_random_solution(self.groups)
+            sol = generate_o2_seed_solution(self.groups) if self.objective == "o2" else generate_random_solution(self.groups)
             if has_cap and self.constraint_mode in ("repair", "penalty"):
                 sol = repair_solution(sol, self.groups)
             pop.append(sol)
         return pop
 
     def _evaluate(self, sol: Solution) -> tuple[float, int, int]:
-        fitness, units, hr, _ = evaluate_solution(
+        fitness, units, hr, _, profit = evaluate_solution(
             sol, self.groups, self.objective, self.omega, self.constraint_mode
         )
         sol.fitness_o1 = fitness
         sol.total_units = units
         sol.total_hr = hr
+        sol.total_profit = profit
         return fitness, units, hr
 
     def _tournament(self, population: list[Solution]) -> Solution:
@@ -867,6 +1072,8 @@ class GeneticAlgorithmOptimizer:
         """Mutação: perturbação multiplicativa por bloco (igual ao Hill Climbing)."""
         if random.random() > self.mutation_rate:
             return sol
+        if self.objective == "o2":
+            return generate_neighbor_o2(sol, self.groups, self.constraint_mode)
         return generate_neighbor_on_triplet(sol, self.groups)
 
     def optimize(self) -> Solution:
@@ -918,7 +1125,7 @@ class GeneticAlgorithmOptimizer:
                 self.best_solution = gen_best.copy()
 
             # Convergência registada como avaliação acumulada (equivalente a iteração)
-            self.convergence.append((eval_count, self.best_solution.fitness_o1))
+            self.convergence.append((eval_count, self.best_solution.total_profit, self.best_solution.total_hr))
 
         return self.best_solution
 
@@ -1022,6 +1229,36 @@ def _pareto_sort(pts: list[tuple[int, int]]) -> tuple[list[int], list[int]]:
     return [x[0] for x in s], [x[1] for x in s]
 
 
+def _hypervolume_2d(points: list[tuple[int, int]], ref_point: tuple[int, int]) -> float:
+    """Hypervolume 2D para max profit / min RH com referência (profit_min, hr_max)."""
+    if not points:
+        return 0.0
+    nd_points = list(dict.fromkeys(_filter_non_dominated(points)))
+    ordered = sorted(nd_points, key=lambda x: x[1])
+    ref_profit, ref_hr = ref_point
+    hv = 0.0
+    prev_profit = float(ref_profit)
+    for profit, hr in ordered:
+        width = max(0.0, float(ref_hr - hr))
+        height = max(0.0, float(profit) - prev_profit)
+        hv += width * height
+        prev_profit = max(prev_profit, float(profit))
+    return hv
+
+
+def _filter_non_dominated(points: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Filtra pontos não-dominados (maximizar profit, minimizar hr)."""
+    nd = []
+    for p1, h1 in points:
+        dominated = any(
+            p2 >= p1 and h2 <= h1 and (p2 > p1 or h2 < h1)
+            for p2, h2 in points
+        )
+        if not dominated:
+            nd.append((p1, h1))
+    return nd
+
+
 def save_pareto_front_plot(
     pareto_points: list[tuple[int, int]],
     output_prefix: str,
@@ -1035,25 +1272,26 @@ def save_pareto_front_plot(
     if not pareto_points:
         return ""
 
-    # Filtrar soluções com lucro positivo.
-    pos_final = [(p, h) for p, h in pareto_points if p > 0]
-    if pos_final:
-        pareto_points = pos_final
+    pareto_points = list(dict.fromkeys(_filter_non_dominated(pareto_points)))
+    if not pareto_points:
+        return ""
 
     fig, ax = plt.subplots(figsize=(8, 6))
+    ref_point = (min(p for p, _ in pareto_points) - 1, max(h for _, h in pareto_points) + 1)
+    hv = _hypervolume_2d(pareto_points, ref_point)
 
     # --- Evolução por geração (cinzento → azul, como no R) ---
     if pareto_history:
         n_steps = len(pareto_history)
         for step_idx, (gen, pts) in enumerate(pareto_history):
-            pos_pts = [(p, h) for p, h in pts if p > 0]
-            if not pos_pts:
+            nd_hist = list(dict.fromkeys(_filter_non_dominated(pts)))
+            if not nd_hist:
                 continue
             t = step_idx / max(1, n_steps - 1)          # 0 → 1
             gray = 0.80 - 0.65 * t                       # claro → escuro
             alpha = 0.20 + 0.55 * t
             col = (gray, gray, gray)
-            sh, sp = _pareto_sort(pos_pts)
+            sh, sp = _pareto_sort(nd_hist)
             ax.plot(sh, sp, color=col, alpha=alpha, linewidth=1.0)
             ax.scatter(sh, sp, color=col, s=12, alpha=alpha)
 
@@ -1072,9 +1310,16 @@ def save_pareto_front_plot(
 
     ax.set_xlabel("RH Total (trabalhador-dias)", fontsize=11)
     ax.set_ylabel("Lucro Líquido Semanal (€)", fontsize=11)
-    ax.set_title("Fronteira de Pareto — O3 (NSGA-II)\nMaximizar Lucro  ×  Minimizar RH", fontsize=12)
+    ax.set_title(
+        f"Fronteira de Pareto — O3 (NSGA-II) | HV={hv:.0f} | pontos={len(pareto_points)}\n"
+        "Maximizar Lucro  ×  Minimizar RH",
+        fontsize=12,
+    )
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=9)
+    ax.axvline(ref_point[1], color="gray", linewidth=1, alpha=0.6)
+    ax.axhline(ref_point[0], color="gray", linewidth=1, alpha=0.6)
+    ax.scatter([ref_point[1]], [ref_point[0]], color="gray", s=35, zorder=3)
     plt.tight_layout()
     out_file = f"{output_prefix}_o3_pareto_front.png"
     plt.savefig(out_file, dpi=150, bbox_inches="tight")
@@ -1082,8 +1327,76 @@ def save_pareto_front_plot(
     return out_file
 
 
+def save_weighted_sweep_pareto_plot(
+    sweep_points: list[tuple[int, int]],
+    output_prefix: str,
+    nsga2_points: list[tuple[int, int]] | None = None,
+) -> str:
+    """Plota a frente de Pareto aproximada via soma ponderada (sweep de omegas),
+    comparada com a fronteira do NSGA-II.
+    X = RH total, Y = Lucro líquido semanal.
+    """
+    if not sweep_points:
+        return ""
+
+    nd_points = _filter_non_dominated(sweep_points)
+    if not nd_points:
+        return ""
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    all_points = list(nd_points)
+    if nsga2_points:
+        all_points.extend(nsga2_points)
+    ref_point = (min(p for p, _ in all_points) - 1, max(h for _, h in all_points) + 1)
+    hv_nsga = None
+    hv_weighted = _hypervolume_2d(nd_points, ref_point)
+
+    # Frente NSGA-II (se disponível)
+    if nsga2_points:
+        nd_nsga = list(dict.fromkeys(_filter_non_dominated(nsga2_points)))
+        if nd_nsga:
+            hv_nsga = _hypervolume_2d(nd_nsga, ref_point)
+            nsga_hrs, nsga_profits = _pareto_sort(nd_nsga)
+            ax.plot(
+                nsga_hrs,
+                nsga_profits,
+                color="tab:blue",
+                linewidth=2.0,
+                label=f"NSGA-II (HV={hv_nsga:.0f}, n={len(nd_nsga)})",
+            )
+            ax.scatter(nsga_hrs, nsga_profits, c="tab:blue", s=50, zorder=5)
+
+    # Frente por soma ponderada
+    ws_hrs, ws_profits = _pareto_sort(nd_points)
+    ax.plot(ws_hrs, ws_profits, color="tab:orange", linewidth=2.0,
+            linestyle="--", label=f"GA ponderado (HV={hv_weighted:.0f}, n={len(nd_points)})")
+    ax.scatter(ws_hrs, ws_profits, c="tab:orange", s=60, zorder=5)
+
+    ax.set_xlabel("RH Total (trabalhador-dias)", fontsize=11)
+    ax.set_ylabel("Lucro Líquido Semanal (€)", fontsize=11)
+    ax.set_title(
+        "Frente de Pareto — NSGA-II vs GA ponderado (sweep ω)\nMaximizar Lucro  ×  Minimizar RH",
+        fontsize=12,
+    )
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=9)
+    ax.axvline(ref_point[1], color="gray", linewidth=1, alpha=0.6)
+    ax.axhline(ref_point[0], color="gray", linewidth=1, alpha=0.6)
+    ax.scatter([ref_point[1]], [ref_point[0]], color="gray", s=35, zorder=3)
+    plt.tight_layout()
+    out_file = f"{output_prefix}_o3_weighted_sweep_front.png"
+    plt.savefig(out_file, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_file
+
+
 def save_convergence_plots(convergence_data: dict, output_prefix: str) -> list[str]:
-    """Guarda curvas de convergência por objetivo (inclui modo de constraints)."""
+    """Guarda curvas de convergência por objetivo.
+
+    Cada ponto é um 3-tuplo (step, profit, hr).
+    - O1/O2: X = step (iteração), Y = lucro  (melhor encontrado até ao momento)
+    - O3_WEIGHTED/O3_PARETO: X = RH, Y = lucro  (espaço bi-objetivo)
+    """
     created_files: list[str] = []
     method_labels = {
         "monte_carlo": "Monte Carlo",
@@ -1100,18 +1413,17 @@ def save_convergence_plots(convergence_data: dict, output_prefix: str) -> list[s
         "nsga_ii": "tab:orange",
     }
 
-    # Avoid splitting by underscores because method names (e.g., monte_carlo)
-    # also contain underscores.
     known_objectives = ["o1", "o2", "o3_weighted", "o3_pareto"]
     objectives = [
         obj for obj in known_objectives if any(key.startswith(f"{obj}_") for key in convergence_data.keys())
     ]
     for objective in objectives:
-        # Repair/none e penalty têm escalas incompatíveis — usar 2 subplots lado a lado.
+        use_rh_axes = objective in ("o3_pareto",)
         modes_groups = [("repair", "none"), ("penalty",)]
         has_objective_data = False
         fig, axes = plt.subplots(1, 2, figsize=(16, 6))
-        fig.suptitle(f"Convergência - {objective.upper()}", fontsize=14)
+        title_suffix = " (Lucro vs RH)" if use_rh_axes else " (Lucro por Iteração)"
+        fig.suptitle(f"Convergência - {objective.upper()}{title_suffix}", fontsize=14)
 
         for ax, modes in zip(axes, modes_groups):
             has_series = False
@@ -1121,24 +1433,47 @@ def save_convergence_plots(convergence_data: dict, output_prefix: str) -> list[s
                     if key not in convergence_data or not convergence_data[key]:
                         continue
 
-                    iterations = [point[0] for point in convergence_data[key]]
-                    scores = [point[1] for point in convergence_data[key]]
-                    linestyle = "-"
-                    ax.plot(
-                        iterations,
-                        scores,
-                        label=f"{method_labels[method]}",
-                        color=method_colors[method],
-                        linestyle=linestyle,
-                        linewidth=2,
-                    )
+                    raw_points = convergence_data[key]  # [(step, profit, hr), ...]
+
+                    if use_rh_axes:
+                        # Remover pontos consecutivos duplicados (profit, hr) para clareza.
+                        deduped = [raw_points[0]]
+                        for p in raw_points[1:]:
+                            if (p[1], p[2]) != (deduped[-1][1], deduped[-1][2]):
+                                deduped.append(p)
+                        explored_points = [(int(p[1]), int(p[2])) for p in deduped]
+                        frontier_points = list(dict.fromkeys(_filter_non_dominated(explored_points)))
+                        frontier_hr, frontier_profit = _pareto_sort(frontier_points)
+
+                        ax.scatter(
+                            [p[1] for p in explored_points],
+                            [p[0] for p in explored_points],
+                            color=method_colors[method],
+                            s=22,
+                            alpha=0.35,
+                        )
+                        ax.plot(
+                            frontier_hr,
+                            frontier_profit,
+                            label=method_labels[method],
+                            color=method_colors[method],
+                            linewidth=2,
+                            marker="o",
+                            markersize=4,
+                        )
+                    else:
+                        x_vals = [p[0] for p in raw_points]   # iteração
+                        y_vals = [p[1] for p in raw_points]   # lucro (best so far)
+                        ax.plot(x_vals, y_vals, label=method_labels[method],
+                                color=method_colors[method], linewidth=2)
+
                     has_series = True
                     has_objective_data = True
 
             mode_label = "Repair / None" if "repair" in modes or "none" in modes else "Penalty"
             ax.set_title(mode_label)
-            ax.set_xlabel("Iteração")
-            ax.set_ylabel("Best Fitness")
+            ax.set_xlabel("RH Total (trabalhadores)" if use_rh_axes else "Iteração")
+            ax.set_ylabel("Lucro (€)")
             ax.grid(True, alpha=0.3)
             if has_series:
                 ax.legend()
@@ -1207,7 +1542,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--output-prefix",
-        default="csv/optimization/metaheuristica",
+        default="csv/optimization/normal/metaheuristica",
         help="Prefixo para ficheiros de saída",
     )
     parser.add_argument(
@@ -1306,6 +1641,25 @@ def main() -> None:
         help="Estratégia do O3: weighted, pareto, ou ambos.",
     )
     parser.add_argument(
+        "--o3-omega-sweep",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Executa O3_WEIGHTED com múltiplos omegas para aproximar a frente de Pareto (default: ativo; desativar com --no-o3-omega-sweep).",
+    )
+    parser.add_argument(
+        "--o3-omega-values",
+        nargs="+",
+        type=float,
+        default=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9],
+        help="Valores de omega para o sweep (default: 0.1 a 0.9).",
+    )
+    parser.add_argument(
+        "--o3-omega-sweep-runs",
+        type=int,
+        default=1,
+        help="Número de runs por omega no sweep (default: 1; não precisa de robustez estatística).",
+    )
+    parser.add_argument(
         "--seed-base",
         type=int,
         default=42,
@@ -1336,6 +1690,7 @@ def main() -> None:
     scenario_rows: list[dict] = []
     convergence_data = {}
     pareto_data: dict[str, list] = {}
+    weighted_sweep_points: list[tuple[int, int]] = []  # (profit, hr) para frente Pareto via soma ponderada
 
     print("=" * 70)
     print("OTIMIZAÇÃO COM METAHEURÍSTICAS")
@@ -1344,7 +1699,12 @@ def main() -> None:
     # Executar cenários com replicações por método/objetivo/modo.
     for objective in objectives:
         objective_constraint_modes = default_constraint_modes if objective in ("o2", "o3_weighted") else ["none"]
-        objective_methods = ["nsga_ii"] if objective == "o3_pareto" else base_methods
+        if objective == "o3_pareto":
+            objective_methods = ["nsga_ii"]
+        elif objective == "o3_weighted":
+            objective_methods = ["genetic_algorithm"]
+        else:
+            objective_methods = base_methods
         for constraint_mode in objective_constraint_modes:
             for method in objective_methods:
                 label = f"{objective.upper()} × {method.upper()} × {constraint_mode.upper()}"
@@ -1396,7 +1756,7 @@ def main() -> None:
 
                     solution = optimizer.optimize()
                     plan_df = solution_to_plan_df(objective.upper(), method.upper(), groups, solution)
-                    total_profit = int(plan_df["Daily_Profit"].sum())
+                    total_profit = int(getattr(solution, "total_profit", 0))
                     # Feasibility só se aplica ao O2; O1 e O3 são sempre válidos.
                     feasible = (solution.total_units <= UNITS_CAP) if objective in ("o2", "o3_weighted", "o3_pareto") else True
 
@@ -1485,6 +1845,41 @@ def main() -> None:
                         "history": best_run.get("pareto_history", []),
                     }
 
+                # --- Omega sweep para O3_WEIGHTED: como no professor, usar apenas GA ponderado ---
+                if args.o3_omega_sweep and objective == "o3_weighted" and method == "genetic_algorithm":
+                    # Incluir resultado da corrida actual (omega = args.omega)
+                    if best_run["feasible"]:
+                        weighted_sweep_points.append((best_run["total_profit"], best_run["total_hr"]))
+
+                    # Correr os restantes omegas do sweep
+                    for sw_omega in args.o3_omega_values:
+                        if abs(sw_omega - args.omega) < 1e-9:
+                            continue  # já foi executado acima
+                        sw_per_run: list[dict] = []
+                        sw_key = f"sweep_{sw_omega:.2f}|{method}|{constraint_mode}"
+                        sw_seed_offset = sum(ord(ch) for ch in sw_key) * 1000
+                        for sw_run in range(args.o3_omega_sweep_runs):
+                            random.seed(args.seed_base + sw_seed_offset + sw_run)
+                            sw_opt = GeneticAlgorithmOptimizer(
+                                groups,
+                                objective,
+                                sw_omega,
+                                constraint_mode,
+                                total_evals=args.ga_total_evals,
+                                pop_size=args.ga_pop_size,
+                                crossover_rate=args.ga_crossover_rate,
+                                mutation_rate=args.ga_mutation_rate,
+                            )
+                            sw_sol = sw_opt.optimize()
+                            sw_feasible = (sw_sol.total_units <= UNITS_CAP)
+                            sw_per_run.append({"feasible": sw_feasible, "profit": int(sw_sol.total_profit), "hr": int(sw_sol.total_hr), "fitness": float(sw_sol.fitness_o1)})
+
+                        sw_feasible_runs = [r for r in sw_per_run if r["feasible"]]
+                        if sw_feasible_runs:
+                            sw_best = max(sw_feasible_runs, key=lambda r: r["fitness"])
+                            weighted_sweep_points.append((sw_best["profit"], sw_best["hr"]))
+                    print(f"  Sweep omega concluído: {len(weighted_sweep_points)} pontos acumulados.")
+
     # Guardar resultados por execução
     runs_file = f"{output_prefix}_runs.csv"
     pd.DataFrame(run_rows).to_csv(runs_file, index=False)
@@ -1492,7 +1887,7 @@ def main() -> None:
 
     # Guardar convergência em JSON
     convergence_json = {
-        key: [[int(it), float(fit)] for it, fit in conv]
+        key: [[int(step), int(profit), int(hr)] for step, profit, hr in conv]
         for key, conv in convergence_data.items()
     }
     conv_file = f"{output_prefix}_convergence.json"
@@ -1552,6 +1947,15 @@ def main() -> None:
         pf = save_pareto_front_plot(pts, output_prefix, hist)
         if pf:
             pareto_plot_files.append(pf)
+
+    # Gráfico comparativo: soma ponderada (sweep omegas) vs NSGA-II
+    if args.o3_omega_sweep and weighted_sweep_points:
+        nsga2_pts = pareto_data.get("o3_pareto", {}).get("points", []) if pareto_data else []
+        wsf = save_weighted_sweep_pareto_plot(weighted_sweep_points, output_prefix, nsga2_pts or None)
+        if wsf:
+            pareto_plot_files.append(wsf)
+            print(f"Weighted sweep Pareto front saved: {wsf}")
+
     print("\nVisualization files:")
     for file_name in plot_files:
         print(f" - {file_name}")
