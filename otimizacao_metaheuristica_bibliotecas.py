@@ -327,8 +327,9 @@ class MonteCarloOptimizer:
         parametrization = ng.p.Array(init=init).set_bounds(xl, xu)
         optimizer = ng.optimizers.RandomSearch(parametrization=parametrization, budget=max(1, self.iterations), num_workers=1)
 
-        best_solution: base.Solution | None = None
-        best_key: tuple[float, float] | None = None
+        init_evaluated = _evaluate_candidate(init, self.groups, self.objective, self.omega, self.constraint_mode)
+        best_solution: base.Solution | None = init_evaluated[5].copy()
+        best_key: tuple[float, float] | None = _key_for_best(init_evaluated, self.objective)
         for iteration in range(max(1, self.iterations)):
             candidate = optimizer.ask()
             evaluated = _evaluate_candidate(candidate.value, self.groups, self.objective, self.omega, self.constraint_mode)
@@ -361,8 +362,9 @@ class HillClimbingOptimizer:
         parametrization = ng.p.Array(init=init).set_bounds(xl, xu)
         optimizer = ng.optimizers.OnePlusOne(parametrization=parametrization, budget=max(1, self.iterations), num_workers=1)
 
-        best_solution: base.Solution | None = None
-        best_key: tuple[float, float] | None = None
+        init_evaluated = _evaluate_candidate(init, self.groups, self.objective, self.omega, self.constraint_mode)
+        best_solution: base.Solution | None = init_evaluated[5].copy()
+        best_key: tuple[float, float] | None = _key_for_best(init_evaluated, self.objective)
         for iteration in range(max(1, self.iterations)):
             candidate = optimizer.ask()
             evaluated = _evaluate_candidate(candidate.value, self.groups, self.objective, self.omega, self.constraint_mode)
@@ -440,7 +442,7 @@ class SimulatedAnnealingOptimizer:
             seen_vectors, self.groups, self.objective, self.omega, self.constraint_mode
         )
         self.convergence = _history_best_progress(
-            [type("Entry", (), {"pop": type("Pop", (), {"get": lambda _self, _key: np.atleast_2d(v)})()}) for v in seen_vectors],
+            [type("Entry", (), {"pop": type("Pop", (), {"get": lambda _self, _key, val=v: np.atleast_2d(val)})()}) for v in seen_vectors],
             self.groups,
             self.objective,
             self.omega,

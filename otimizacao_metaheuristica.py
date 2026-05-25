@@ -142,31 +142,39 @@ def round_units(factor: float, pr: float) -> int:
     return int(round(factor * 10.0 / math.log(2.0 - pr)))
 
 
+_OPTION_CACHE = {}
+
+
 def build_day_option(group: Group, pr: float, x: int, j: int) -> Option:
-    """Função eval do professor"""
+    """Função eval do professor (com cache otimizado)"""
+    pr_disc = discretize_pr(pr)
+    key = (group.idx, pr_disc, x, j)
+    if key in _OPTION_CACHE:
+        return _OPTION_CACHE[key]
+
     params = STORE_PARAMS[group.store]
 
     assisted_x = min(7 * x, group.customers)
     rem = group.customers - assisted_x
     assisted_j = min(6 * j, rem)
 
-    units_per_x = round_units(params["Fx"], pr)
-    units_per_j = round_units(params["Fj"], pr)
+    units_per_x = round_units(params["Fx"], pr_disc)
+    units_per_j = round_units(params["Fj"], pr_disc)
 
     units_x = assisted_x * units_per_x
     units_j = assisted_j * units_per_j
     units_total = units_x + units_j
 
-    sales_x = int(round(units_x * (1.0 - pr) * 1.07))
-    sales_j = int(round(units_j * (1.0 - pr) * 1.07))
+    sales_x = int(round(units_x * (1.0 - pr_disc) * 1.07))
+    sales_j = int(round(units_j * (1.0 - pr_disc) * 1.07))
 
     hr_cost_x = x * wage_x(group.date)
     hr_cost_j = j * wage_j(group.date)
 
     daily_profit = sales_x + sales_j - hr_cost_x - hr_cost_j
 
-    return Option(
-        pr=pr,
+    opt = Option(
+        pr=pr_disc,
         x=x,
         j=j,
         assisted_x=assisted_x,
@@ -181,6 +189,9 @@ def build_day_option(group: Group, pr: float, x: int, j: int) -> Option:
         daily_profit=daily_profit,
         hr_total=x + j,
     )
+    _OPTION_CACHE[key] = opt
+    return opt
+
 
 
 # ============================================================================
@@ -243,56 +254,75 @@ def repair_solution(sol: Solution, groups: list[Group], units_cap: int = UNITS_C
     """
     repaired = sol.copy()
 
-    while True:
-        decisions = solution_vector_to_decisions(repaired.values, groups)
-        options = decisions_to_options(decisions, groups)
-        total_units = sum(opt.units_total for opt in options.values())
-        if total_units <= units_cap:
-            break
+    # Precalculate options for each group
+    decisions = solution_vector_to_decisions(repaired.values, groups)
+    current_options = [build_day_option(group, decisions[group.idx][0], decisions[group.idx][1], decisions[group.idx][2]) for group in groups]
+    total_units = sum(opt.units_total for opt in current_options)
 
-        overflow = total_units - units_cap
-        best_move: tuple[float, int, int, int, int] | None = None
+    if total_units <= units_cap:
+        return repaired
 
-        for group in groups:
-            base_idx = group.idx * 3
-            current_pr = float(repaired.values[base_idx])
-            current_x = int(repaired.values[base_idx + 1])
-            current_j = int(repaired.values[base_idx + 2])
-            current_opt = options[group.idx]
+    # Precalculate best decrement move for each group
+    group_moves = [None] * len(groups)
 
-            if current_x > 0:
-                candidate_opt = build_day_option(group, current_pr, current_x - 1, current_j)
-                units_drop = current_opt.units_total - candidate_opt.units_total
-                profit_drop = current_opt.daily_profit - candidate_opt.daily_profit
-                if units_drop > 0:
-                    score = profit_drop / units_drop
-                    move = (score, -units_drop, base_idx + 1, current_x - 1, current_j)
-                    best_move = move if best_move is None or move < best_move else best_move
+    def update_group_move(group_idx: int):
+        group = groups[group_idx]
+        opt = current_options[group_idx]
+        best_grp_move = None
 
-            if current_j > 0:
-                candidate_opt = build_day_option(group, current_pr, current_x, current_j - 1)
-                units_drop = current_opt.units_total - candidate_opt.units_total
-                profit_drop = current_opt.daily_profit - candidate_opt.daily_profit
-                if units_drop > 0:
-                    score = profit_drop / units_drop
-                    move = (score, -units_drop, base_idx + 2, current_x, current_j - 1)
-                    best_move = move if best_move is None or move < best_move else best_move
+        if opt.x > 0:
+            candidate_opt = build_day_option(group, opt.pr, opt.x - 1, opt.j)
+            units_drop = opt.units_total - candidate_opt.units_total
+            profit_drop = opt.daily_profit - candidate_opt.daily_profit
+            if units_drop > 0:
+                score = profit_drop / units_drop
+                best_grp_move = (score, -units_drop, group_idx * 3 + 1, opt.x - 1, opt.j)
+
+        if opt.j > 0:
+            candidate_opt = build_day_option(group, opt.pr, opt.x, opt.j - 1)
+            units_drop = opt.units_total - candidate_opt.units_total
+            profit_drop = opt.daily_profit - candidate_opt.daily_profit
+            if units_drop > 0:
+                score = profit_drop / units_drop
+                move = (score, -units_drop, group_idx * 3 + 2, opt.x, opt.j - 1)
+                if best_grp_move is None or move < best_grp_move:
+                    best_grp_move = move
+
+        group_moves[group_idx] = best_grp_move
+
+    # Initialize moves
+    for idx in range(len(groups)):
+        update_group_move(idx)
+
+    while total_units > units_cap:
+        # Find the best move across all groups
+        best_move = None
+        best_grp_idx = -1
+        for idx in range(len(groups)):
+            move = group_moves[idx]
+            if move is not None:
+                if best_move is None or move < best_move:
+                    best_move = move
+                    best_grp_idx = idx
 
         if best_move is None:
             break
 
         _, _, move_idx, new_x, new_j = best_move
-        base_idx = (move_idx // 3) * 3
+        
+        # Apply the move
+        base_idx = best_grp_idx * 3
         repaired.values[base_idx + 1] = new_x
         repaired.values[base_idx + 2] = new_j
 
-        # Se o excesso for pequeno, permite sair logo após uma redução suficiente.
-        if overflow > 0:
-            decisions = solution_vector_to_decisions(repaired.values, groups)
-            options = decisions_to_options(decisions, groups)
-            total_units = sum(opt.units_total for opt in options.values())
-            if total_units <= units_cap:
-                break
+        # Update the option for that group
+        old_opt = current_options[best_grp_idx]
+        new_opt = build_day_option(groups[best_grp_idx], old_opt.pr, new_x, new_j)
+        current_options[best_grp_idx] = new_opt
+        total_units += new_opt.units_total - old_opt.units_total
+
+        # Re-evaluate candidate moves for the modified group
+        update_group_move(best_grp_idx)
 
     return repaired
 
@@ -453,62 +483,38 @@ def generate_random_feasible_solution(groups: list[Group], units_cap: int = UNIT
 
     for group in groups:
         pr = pr_from_int(random.randint(PR_MIN_INT, PR_MAX_INT))
+        pr_disc = discretize_pr(pr)
         x_upper_bound = math.ceil(group.customers / 7) if group.customers > 0 else 0
         j_upper_bound = math.ceil(group.customers / 6) if group.customers > 0 else 0
+
+        # Precalculate units_per_x and units_per_j for this group and pr
+        params = STORE_PARAMS[group.store]
+        units_per_x = round_units(params["Fx"], pr_disc)
+        units_per_j = round_units(params["Fj"], pr_disc)
 
         feasible_choices: list[tuple[int, int]] = [(0, 0)]
         for x in range(x_upper_bound + 1):
+            assisted_x = min(7 * x, group.customers)
+            units_x = assisted_x * units_per_x
+            if accumulated_units + units_x > units_cap:
+                break
+                
             for j in range(j_upper_bound + 1):
-                option = build_day_option(group, pr, x, j)
-                if accumulated_units + option.units_total <= units_cap:
+                rem = group.customers - assisted_x
+                assisted_j = min(6 * j, rem)
+                units_total = units_x + assisted_j * units_per_j
+                
+                if accumulated_units + units_total <= units_cap:
                     feasible_choices.append((x, j))
+                else:
+                    break
 
         x, j = random.choice(feasible_choices)
-        accumulated_units += build_day_option(group, pr, x, j).units_total
-        values.extend([pr, x, j])
+        option = build_day_option(group, pr_disc, x, j)
+        accumulated_units += option.units_total
+        values.extend([pr_disc, x, j])
 
     return Solution(values=values)
-
-
-def _best_o2_addition_move(
-    sol: Solution,
-    groups: list[Group],
-    remaining_units: int,
-) -> tuple[float, int, int, int, int] | None:
-    decisions = solution_vector_to_decisions(sol.values, groups)
-    options = decisions_to_options(decisions, groups)
-    candidate_moves: list[tuple[float, int, int, int, int]] = []
-
-    for group in groups:
-        base_idx = group.idx * 3
-        pr = float(sol.values[base_idx])
-        x = int(sol.values[base_idx + 1])
-        j = int(sol.values[base_idx + 2])
-        current_opt = options[group.idx]
-
-        x_upper_bound = math.ceil(group.customers / 7) if group.customers > 0 else 0
-        j_upper_bound = math.ceil(group.customers / 6) if group.customers > 0 else 0
-
-        if x < x_upper_bound:
-            candidate_opt = build_day_option(group, pr, x + 1, j)
-            units_gain = candidate_opt.units_total - current_opt.units_total
-            profit_gain = candidate_opt.daily_profit - current_opt.daily_profit
-            if 0 < units_gain <= remaining_units and profit_gain > 0:
-                candidate_moves.append((profit_gain / units_gain, profit_gain, -units_gain, base_idx, x + 1, j))
-
-        if j < j_upper_bound:
-            candidate_opt = build_day_option(group, pr, x, j + 1)
-            units_gain = candidate_opt.units_total - current_opt.units_total
-            profit_gain = candidate_opt.daily_profit - current_opt.daily_profit
-            if 0 < units_gain <= remaining_units and profit_gain > 0:
-                candidate_moves.append((profit_gain / units_gain, profit_gain, -units_gain, base_idx, x, j + 1))
-
-    if not candidate_moves:
-        return None
-
-    candidate_moves.sort(reverse=True)
-    top_k = candidate_moves[:min(5, len(candidate_moves))]
-    return random.choice(top_k)
 
 
 def _fill_o2_slack(
@@ -520,21 +526,57 @@ def _fill_o2_slack(
     filled = sol.copy()
     steps = max_steps if max_steps is not None else max(8, len(groups) * 2)
 
+    # Precalculate options for each group
+    decisions = solution_vector_to_decisions(filled.values, groups)
+    current_options = [build_day_option(group, decisions[group.idx][0], decisions[group.idx][1], decisions[group.idx][2]) for group in groups]
+    total_units = sum(opt.units_total for opt in current_options)
+
     for _ in range(steps):
-        decisions = solution_vector_to_decisions(filled.values, groups)
-        options = decisions_to_options(decisions, groups)
-        total_units = sum(opt.units_total for opt in options.values())
         remaining_units = units_cap - total_units
         if remaining_units <= 0:
             break
 
-        move = _best_o2_addition_move(filled, groups, remaining_units)
-        if move is None:
+        candidate_moves = []
+        for group_idx in range(len(groups)):
+            group = groups[group_idx]
+            opt = current_options[group_idx]
+            
+            x_upper_bound = math.ceil(group.customers / 7) if group.customers > 0 else 0
+            j_upper_bound = math.ceil(group.customers / 6) if group.customers > 0 else 0
+
+            if opt.x < x_upper_bound:
+                candidate_opt = build_day_option(group, opt.pr, opt.x + 1, opt.j)
+                units_gain = candidate_opt.units_total - opt.units_total
+                profit_gain = candidate_opt.daily_profit - opt.daily_profit
+                if 0 < units_gain <= remaining_units and profit_gain > 0:
+                    candidate_moves.append((profit_gain / units_gain, profit_gain, -units_gain, group_idx, opt.x + 1, opt.j))
+
+            if opt.j < j_upper_bound:
+                candidate_opt = build_day_option(group, opt.pr, opt.x, opt.j + 1)
+                units_gain = candidate_opt.units_total - opt.units_total
+                profit_gain = candidate_opt.daily_profit - opt.daily_profit
+                if 0 < units_gain <= remaining_units and profit_gain > 0:
+                    candidate_moves.append((profit_gain / units_gain, profit_gain, -units_gain, group_idx, opt.x, opt.j + 1))
+
+        if not candidate_moves:
             break
 
-        _, _, _, base_idx, new_x, new_j = move
+        candidate_moves.sort(reverse=True)
+        top_k = candidate_moves[:min(5, len(candidate_moves))]
+        move = random.choice(top_k)
+
+        _, _, _, best_grp_idx, new_x, new_j = move
+        
+        # Apply the move
+        base_idx = best_grp_idx * 3
         filled.values[base_idx + 1] = new_x
         filled.values[base_idx + 2] = new_j
+
+        # Update options and total_units
+        old_opt = current_options[best_grp_idx]
+        new_opt = build_day_option(groups[best_grp_idx], old_opt.pr, new_x, new_j)
+        current_options[best_grp_idx] = new_opt
+        total_units += new_opt.units_total - old_opt.units_total
 
     return filled
 

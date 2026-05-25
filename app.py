@@ -10,6 +10,7 @@ import sys
 import types
 
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 
 # ── Suppress matplotlib (imported at module level by otimizacao_metaheuristica) ──
@@ -22,84 +23,190 @@ if "matplotlib" not in sys.modules:
 # ── Custom CSS ─────────────────────────────────────────────────────────────────
 CUSTOM_CSS = """
 <style>
+    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap');
+
     /* Hide default Streamlit chrome */
     #MainMenu, footer, header { visibility: hidden; }
 
-    /* Page background */
-    .stApp { background-color: #f0f2f6; }
-
-    /* Sidebar */
-    [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #1e2a4a 0%, #2d3f6b 100%);
+    /* Font application */
+    html, body, [class*="css"], .stMarkdown, .stText, label {
+        font-family: 'Outfit', sans-serif !important;
     }
-    [data-testid="stSidebar"] * { color: #e8eaf0 !important; }
+
+    /* Page background & global text adjustments */
+    .stApp {
+        background-color: #0b0f19;
+        background-image: radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.05) 0%, transparent 40%),
+                          radial-gradient(circle at 90% 80%, rgba(139, 92, 246, 0.05) 0%, transparent 40%);
+        background-attachment: fixed;
+    }
+
+    /* Sidebar - Glassy navy-slate */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #070a13 0%, #0f172a 100%) !important;
+        border-right: 1px solid rgba(255, 255, 255, 0.05) !important;
+    }
+    [data-testid="stSidebar"] * { color: #e2e8f0 !important; }
     [data-testid="stSidebar"] .stSelectbox label,
-    [data-testid="stSidebar"] .stMarkdown p { color: #b0b8d4 !important; }
-    [data-testid="stSidebar"] hr { border-color: #3d4f7a !important; }
+    [data-testid="stSidebar"] .stMarkdown p { color: #94a3b8 !important; }
+    [data-testid="stSidebar"] hr { border-color: rgba(255, 255, 255, 0.08) !important; }
 
     /* Section title cards */
     .section-card {
-        background: white;
-        border-radius: 10px;
-        padding: 20px 24px 16px 24px;
-        margin-bottom: 20px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+        background: rgba(15, 23, 42, 0.6);
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        border-radius: 12px;
+        padding: 24px;
+        margin-bottom: 24px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+        backdrop-filter: blur(8px);
+        transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
+    }
+    .section-card:hover {
+        transform: translateY(-2px);
+        border-color: rgba(99, 102, 241, 0.2);
+        box-shadow: 0 8px 30px rgba(99, 102, 241, 0.08);
     }
 
-    /* Store header strip */
+    /* Store header strip - premium gradient */
     .store-header {
-        background: linear-gradient(90deg, #2d3f6b, #4a6fa5);
+        background: linear-gradient(90deg, #4f46e5, #3b82f6);
         color: white !important;
-        padding: 8px 16px;
-        border-radius: 6px;
+        padding: 10px 16px;
+        border-radius: 8px;
         font-weight: 600;
         font-size: 0.95rem;
-        margin-bottom: 8px;
+        margin-bottom: 12px;
+        box-shadow: 0 2px 10px rgba(79, 70, 229, 0.2);
     }
 
     /* Feasibility badges */
-    .badge-ok  { background:#d1fae5; color:#065f46; padding:3px 10px; border-radius:20px; font-size:0.82rem; font-weight:600; }
-    .badge-bad { background:#fee2e2; color:#991b1b; padding:3px 10px; border-radius:20px; font-size:0.82rem; font-weight:600; }
+    .badge-ok  {
+        background: rgba(16, 185, 129, 0.12);
+        color: #34d399 !important;
+        border: 1px solid rgba(16, 185, 129, 0.3);
+        padding: 5px 14px;
+        border-radius: 20px;
+        font-size: 0.85rem;
+        font-weight: 600;
+        box-shadow: 0 0 12px rgba(16, 185, 129, 0.08);
+    }
+    .badge-bad {
+        background: rgba(239, 68, 68, 0.12);
+        color: #f87171 !important;
+        border: 1px solid rgba(239, 68, 68, 0.3);
+        padding: 5px 14px;
+        border-radius: 20px;
+        font-size: 0.85rem;
+        font-weight: 600;
+        box-shadow: 0 0 12px rgba(239, 68, 68, 0.08);
+    }
 
     /* Tab bar */
-    .stTabs [data-baseweb="tab-list"] { gap: 6px; background: transparent; }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        background: rgba(15, 23, 42, 0.8);
+        padding: 6px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+    }
     .stTabs [data-baseweb="tab"] {
-        background: white;
-        border-radius: 8px 8px 0 0;
-        padding: 8px 20px;
-        font-weight: 500;
+        background: transparent;
+        color: #94a3b8 !important;
+        border-radius: 6px;
+        padding: 8px 24px;
+        font-weight: 600;
         border: none;
-        box-shadow: 0 -1px 4px rgba(0,0,0,0.06);
+        transition: all 0.2s ease-in-out;
     }
     .stTabs [aria-selected="true"] {
-        background: #2d3f6b !important;
+        background: linear-gradient(135deg, #4f46e5, #3b82f6) !important;
         color: white !important;
+        box-shadow: 0 4px 12px rgba(79, 70, 229, 0.25);
     }
 
-    /* Metric cards inside main */
+    /* Metric cards inside main - Dark glassmorphic */
     [data-testid="stMetric"] {
-        background: white;
-        border-radius: 8px;
-        padding: 12px 16px;
-        box-shadow: 0 1px 6px rgba(0,0,0,0.07);
+        background: rgba(15, 23, 42, 0.4);
+        border: 1px solid rgba(255, 255, 255, 0.04);
+        border-radius: 10px;
+        padding: 16px 20px;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        transition: transform 0.2s, border-color 0.2s;
+    }
+    [data-testid="stMetric"]:hover {
+        transform: scale(1.02);
+        border-color: rgba(99, 102, 241, 0.15);
+    }
+    [data-testid="stMetricLabel"] {
+        color: #94a3b8 !important;
+        font-size: 0.85rem !important;
+        font-weight: 500 !important;
+        letter-spacing: 0.5px !important;
+        text-transform: uppercase !important;
+    }
+    [data-testid="stMetricValue"] {
+        color: #f8fafc !important;
+        font-size: 1.8rem !important;
+        font-weight: 700 !important;
+        background: linear-gradient(90deg, #f8fafc, #cbd5e1);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
     }
 
     /* Dataframe container */
-    [data-testid="stDataFrame"] { border-radius: 8px; overflow: hidden; }
+    [data-testid="stDataFrame"] {
+        border: 1px solid rgba(255, 255, 255, 0.05);
+        border-radius: 10px;
+        overflow: hidden;
+    }
 
     /* Button */
     .stButton > button[kind="primary"] {
-        background: linear-gradient(135deg, #2d3f6b, #4a6fa5);
-        border: none;
-        border-radius: 8px;
-        padding: 10px 28px;
-        font-weight: 600;
-        letter-spacing: 0.3px;
+        background: linear-gradient(135deg, #4f46e5, #3b82f6) !important;
+        border: none !important;
+        border-radius: 8px !important;
+        padding: 12px 30px !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.5px !important;
+        color: white !important;
+        box-shadow: 0 4px 14px rgba(79, 70, 229, 0.3) !important;
+        transition: all 0.2s ease-in-out !important;
     }
-    .stButton > button[kind="primary"]:hover { opacity: 0.9; }
+    .stButton > button[kind="primary"]:hover {
+        opacity: 0.95 !important;
+        transform: translateY(-1px) !important;
+        box-shadow: 0 6px 20px rgba(79, 70, 229, 0.45) !important;
+    }
 
-    /* Expander */
-    details summary { font-weight: 600; }
+    /* Expander styling */
+    .streamlit-expanderHeader {
+        background-color: rgba(15, 23, 42, 0.4) !important;
+        border: 1px solid rgba(255, 255, 255, 0.04) !important;
+        border-radius: 8px !important;
+    }
+    .streamlit-expanderContent {
+        background-color: rgba(15, 23, 42, 0.2) !important;
+        border: 1px solid rgba(255, 255, 255, 0.04) !important;
+        border-top: none !important;
+        border-radius: 0 0 8px 8px !important;
+    }
+
+    /* Scrollbars */
+    ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+        background: #0b0f19;
+    }
+    ::-webkit-scrollbar-thumb {
+        background: #1e293b;
+        border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+        background: #334155;
+    }
 </style>
 """
 
@@ -142,12 +249,15 @@ DEF_ITERS = 500
 @st.cache_data(show_spinner="Loading data…")
 def load_app_data() -> dict:
     """Load all CSVs and pre-compute lookups. Called once per session."""
-    # Store dates
+    # Store dates & full dataframes for EDA
     store_dates: dict[str, list[pd.Timestamp]] = {}
+    store_dfs: dict[str, pd.DataFrame] = {}
     for store, path in STORE_CSV.items():
-        df = pd.read_csv(path, usecols=["Date"])
+        df = pd.read_csv(path)
         df["Date"] = pd.to_datetime(df["Date"])
-        store_dates[store] = df.sort_values("Date")["Date"].tolist()
+        df = df.sort_values("Date").reset_index(drop=True)
+        store_dfs[store] = df
+        store_dates[store] = df["Date"].tolist()
 
     # Forecast / optimisation CSVs
     backtest_df     = pd.read_csv(BACKTEST_ALL_CSV)
@@ -202,6 +312,7 @@ def load_app_data() -> dict:
         pred_lookup=pred_lookup,
         actual_lookup=actual_lookup,
         next7_df=ndf,
+        store_dfs=store_dfs,
     )
 
 
@@ -290,6 +401,9 @@ def render_forecasts(
     cols = st.columns(2)
     for i, store in enumerate(STORES_ORDERED):
         rows = []
+        chart_dates = []
+        chart_forecasts = []
+        chart_actuals = []
         for g in (g for g in groups if g.store == store):
             row: dict = {
                 "Date":     str(g.date.date()),
@@ -297,10 +411,14 @@ def render_forecasts(
                 "H":        g.horizon,
                 "Forecast": g.customers,
             }
+            # Format date as MM-DD for clean charts
+            chart_dates.append(g.date.strftime("%m-%d"))
+            chart_forecasts.append(g.customers)
             if has_actuals:
                 actual = actual_lookup.get((store, split_id, g.horizon))
                 row["Actual"] = actual
                 row["Error"]  = (g.customers - actual) if actual is not None else None
+                chart_actuals.append(actual)
             r = best_methods_df[
                 (best_methods_df["Store"] == store) &
                 (best_methods_df["Horizon"] == g.horizon)
@@ -313,6 +431,228 @@ def render_forecasts(
         with cols[i % 2]:
             st.markdown(f'<div class="store-header">📍 {store}</div>', unsafe_allow_html=True)
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            
+            # Construct and render the line chart
+            c_df = pd.DataFrame({"Forecast": chart_forecasts}, index=chart_dates)
+            if has_actuals:
+                c_df["Actual"] = chart_actuals
+            st.line_chart(c_df, height=180)
+
+
+def render_eda(store_dfs: dict[str, pd.DataFrame]) -> None:
+    st.markdown("### 🔍 Exploratory Data Analysis")
+    st.markdown("Explore historical sales, customers, promotional events, and staffing distributions for each store.")
+
+    # Filters panel
+    st.markdown("##### 🛠️ Data Filters")
+    fc1, fc2, fc3, fc4 = st.columns([1.5, 2, 1, 1])
+
+    with fc1:
+        store_options = list(STORE_CSV.keys())
+        sel_store = st.selectbox("Select Store", store_options, key="eda_store")
+
+    df = store_dfs[sel_store].copy()
+    df["Date"] = pd.to_datetime(df["Date"])
+    df["DayOfWeek"] = df["Date"].dt.strftime("%a")
+    df["Month"] = df["Date"].dt.strftime("%b")
+    df["IsWeekend"] = df["Date"].dt.dayofweek.isin([5, 6]).map({True: "Weekend", False: "Weekday"})
+
+    min_date = df["Date"].min().to_pydatetime()
+    max_date = df["Date"].max().to_pydatetime()
+
+    with fc2:
+        selected_dates = st.slider(
+            "Date Range",
+            min_value=min_date,
+            max_value=max_date,
+            value=(min_date, max_date),
+            format="YYYY-MM-DD",
+            key="eda_date_slider"
+        )
+
+    with fc3:
+        tourist_filter = st.selectbox(
+            "Tourist Event",
+            ["All Days", "Only with Event (Yes)", "Only without Event (No)"],
+            key="eda_tourist_filter"
+        )
+
+    with fc4:
+        weekend_filter = st.selectbox(
+            "Day Type",
+            ["All Days", "Weekdays Only", "Weekends Only"],
+            key="eda_weekend_filter"
+        )
+
+    # Filter dataframe
+    filtered_df = df[
+        (df["Date"] >= selected_dates[0]) &
+        (df["Date"] <= selected_dates[1])
+    ].copy()
+
+    if tourist_filter == "Only with Event (Yes)":
+        filtered_df = filtered_df[filtered_df["TouristEvent"] == "Yes"]
+    elif tourist_filter == "Only without Event (No)":
+        filtered_df = filtered_df[filtered_df["TouristEvent"] == "No"]
+
+    if weekend_filter == "Weekdays Only":
+        filtered_df = filtered_df[filtered_df["IsWeekend"] == "Weekday"]
+    elif weekend_filter == "Weekends Only":
+        filtered_df = filtered_df[filtered_df["IsWeekend"] == "Weekend"]
+
+    # Summary Metrics columns
+    st.markdown("")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.metric("Filtered Days Count", f"{len(filtered_df):,}")
+    with c2:
+        avg_cust = filtered_df['Num_Customers'].mean()
+        st.metric("Avg Customers / Day", f"{avg_cust:.1f}" if pd.notna(avg_cust) else "N/A")
+    with c3:
+        avg_sales = filtered_df['Sales'].mean()
+        st.metric("Avg Sales / Day (€)", f"{avg_sales:.1f}" if pd.notna(avg_sales) else "N/A")
+    with c4:
+        st.metric("Tourist Events in Period", f"{filtered_df[filtered_df['TouristEvent'] == 'Yes'].shape[0]}")
+
+    st.divider()
+
+    if filtered_df.empty:
+        st.warning("No data matches the selected filters. Please adjust your criteria.")
+        return
+
+    # Visualizations using Plotly Express
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**📈 Historical Trends & Smooth Curves**")
+        metric_labels = {
+            "Num_Customers": "Customers",
+            "Sales": "Sales (€)",
+            "Pct_On_Sale": "Promotions (%)",
+            "Num_Employees": "Employees (HR)"
+        }
+        plot_metric = st.selectbox(
+            "Select Metric to plot",
+            list(metric_labels.keys()),
+            format_func=lambda k: metric_labels[k],
+            key="eda_metric"
+        )
+
+        filtered_df = filtered_df.sort_values("Date")
+        filtered_df[f"{plot_metric}_rolling"] = filtered_df[plot_metric].rolling(window=30, min_periods=1).mean()
+
+        plot_df = filtered_df.melt(
+            id_vars=["Date"],
+            value_vars=[plot_metric, f"{plot_metric}_rolling"],
+            var_name="Series Type",
+            value_name="Value"
+        )
+        plot_df["Series Type"] = plot_df["Series Type"].map({
+            plot_metric: "Daily Value",
+            f"{plot_metric}_rolling": "30-day Rolling Avg"
+        })
+
+        fig_trend = px.line(
+            plot_df,
+            x="Date",
+            y="Value",
+            color="Series Type",
+            color_discrete_map={"Daily Value": "rgba(79, 70, 229, 0.4)", "30-day Rolling Avg": "#3b82f6"},
+            labels={"Value": metric_labels[plot_metric], "Date": "Date"},
+            template="plotly_dark"
+        )
+        fig_trend.update_layout(
+            margin=dict(l=20, r=20, t=10, b=10),
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            font=dict(family="Outfit, sans-serif"),
+            xaxis=dict(showgrid=False),
+            yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        st.plotly_chart(fig_trend, use_container_width=True)
+
+    with col2:
+        st.markdown("**📅 Day of the Week Seasonality**")
+        dow_order = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        dow_df = filtered_df.groupby("DayOfWeek")["Num_Customers"].mean().reindex(dow_order).reset_index()
+
+        fig_season = px.bar(
+            dow_df,
+            x="DayOfWeek",
+            y="Num_Customers",
+            color="DayOfWeek",
+            color_discrete_sequence=["#4f46e5"],
+            labels={"Num_Customers": "Avg Customers", "DayOfWeek": "Day of the Week"},
+            template="plotly_dark"
+        )
+        fig_season.update_layout(
+            showlegend=False,
+            margin=dict(l=20, r=20, t=10, b=10),
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            font=dict(family="Outfit, sans-serif"),
+            xaxis=dict(categoryorder="array", categoryarray=dow_order),
+            yaxis=dict(gridcolor="rgba(255,255,255,0.05)")
+        )
+        st.plotly_chart(fig_season, use_container_width=True)
+
+    col3, col4 = st.columns(2)
+
+    with col3:
+        st.markdown("**🚀 Impact of Tourist Events**")
+        tourist_df = filtered_df.groupby("TouristEvent")["Num_Customers"].mean().reset_index()
+
+        yes_val = filtered_df[filtered_df["TouristEvent"] == "Yes"]["Num_Customers"].mean()
+        no_val = filtered_df[filtered_df["TouristEvent"] == "No"]["Num_Customers"].mean()
+
+        if pd.notna(yes_val) and pd.notna(no_val) and no_val > 0:
+            pct_increase = ((yes_val - no_val) / no_val) * 100
+            st.caption(f"Tourist events increase average customers by **+{pct_increase:.1f}%** in the selected period.")
+        else:
+            st.caption("No tourist events or data found in this period/selection.")
+
+        fig_tourist = px.bar(
+            tourist_df,
+            x="TouristEvent",
+            y="Num_Customers",
+            color="TouristEvent",
+            color_discrete_map={"Yes": "#3b82f6", "No": "#94a3b8"},
+            labels={"Num_Customers": "Avg Customers", "TouristEvent": "Tourist Event?"},
+            template="plotly_dark"
+        )
+        fig_tourist.update_layout(
+            showlegend=False,
+            margin=dict(l=20, r=20, t=10, b=10),
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            font=dict(family="Outfit, sans-serif"),
+            yaxis=dict(gridcolor="rgba(255,255,255,0.05)")
+        )
+        st.plotly_chart(fig_tourist, use_container_width=True)
+
+    with col4:
+        st.markdown("**🎯 Correlation: Customers vs. Sales**")
+
+        fig_scatter = px.scatter(
+            filtered_df,
+            x="Num_Customers",
+            y="Sales",
+            color="IsWeekend",
+            color_discrete_map={"Weekend": "#8b5cf6", "Weekday": "#3b82f6"},
+            labels={"Num_Customers": "Customers", "Sales": "Sales (€)"},
+            template="plotly_dark"
+        )
+        fig_scatter.update_layout(
+            margin=dict(l=20, r=20, t=10, b=10),
+            plot_bgcolor="rgba(0,0,0,0)",
+            paper_bgcolor="rgba(0,0,0,0)",
+            font=dict(family="Outfit, sans-serif"),
+            xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+            yaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        st.plotly_chart(fig_scatter, use_container_width=True)
 
 
 def render_backtest_summary(
@@ -390,6 +730,25 @@ def render_plan(plan_df: pd.DataFrame, objective: str, method: str) -> None:
                 c1.metric("Gross profit",    f"{gross:,} €")
                 c2.metric("Fixed cost (Ws)", f"−{ws:,} €")
                 c3.metric("Net profit",      f"{net:,} €")
+
+    # ── Visualizations ──
+    st.markdown("### 📊 Performance Visualizations")
+    v_col1, v_col2 = st.columns(2)
+    with v_col1:
+        # Net Profit per Store Bar Chart
+        store_profits = pd.DataFrame([
+            {"Store": store, "Net Profit (€)": net}
+            for store, _, _, _, net in store_results
+        ])
+        st.markdown("**Net Profit per Store**")
+        st.bar_chart(store_profits.set_index("Store"), height=250)
+        
+    with v_col2:
+        # Daily distribution of units sold (combined for all stores)
+        daily_units = plan_df.groupby("Date")["Units_Total"].sum().reset_index()
+        daily_units["Date"] = pd.to_datetime(daily_units["Date"]).dt.strftime("%m-%d")
+        st.markdown("**Daily Total Units Sold (vs Cap)**")
+        st.line_chart(daily_units.set_index("Date"), height=250)
 
     st.divider()
 
@@ -525,13 +884,25 @@ def main() -> None:
 
     if is_past:
         groups = build_split_groups(split_id, pred_lookup, store_dates)
-        tab_names = ["📊 Forecasts & Actuals", "⚙️ Optimization", "📈 Backtest Summary"]
-        tab1, tab2, tab3 = st.tabs(tab_names)
+        tab_names = [
+            "🔍 Exploratory Data Analysis (EDA)",
+            "📊 Forecasts & Actuals",
+            "⚙️ Optimization",
+            "📈 Backtest Summary",
+        ]
+        tab0, tab1, tab2, tab3 = st.tabs(tab_names)
     else:
         groups = next7_groups
-        tab_names = ["📊 Forecasts", "⚙️ Optimization"]
-        tab1, tab2 = st.tabs(tab_names)
+        tab_names = [
+            "🔍 Exploratory Data Analysis (EDA)",
+            "📊 Forecasts",
+            "⚙️ Optimization",
+        ]
+        tab0, tab1, tab2 = st.tabs(tab_names)
         tab3 = None
+
+    with tab0:
+        render_eda(data["store_dfs"])
 
     with tab1:
         st.markdown("### Customer forecasts" + (" & actuals" if is_past else ""))
