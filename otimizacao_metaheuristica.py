@@ -591,6 +591,8 @@ class MonteCarloOptimizer:
         Em objetivos com cap e modo repair, gerar soluções já viáveis preserva
         diversidade; caso contrário, manter a amostragem original.
         """
+        if self.objective == "o2" and self.constraint_mode == "repair":
+            return generate_random_feasible_solution(self.groups)
         if self.objective == "o2":
             return generate_o2_seed_solution(self.groups)
         if self.objective in ("o2", "o3_weighted") and self.constraint_mode == "repair":
@@ -602,7 +604,7 @@ class MonteCarloOptimizer:
         # Gera N soluções independentes e mantém a melhor.
         has_cap = self.objective in ("o2", "o3_weighted")
         self.best_solution = self._random_candidate()
-        if has_cap and self.constraint_mode in ("repair", "penalty"):
+        if has_cap and self.constraint_mode in ("repair", "penalty") and is_solution_invalid(self.best_solution, self.groups):
             self.best_solution = repair_solution(self.best_solution, self.groups)
         fitness, units, hr, _, profit = evaluate_solution(
             self.best_solution, self.groups, self.objective, self.omega, self.constraint_mode
@@ -614,7 +616,7 @@ class MonteCarloOptimizer:
 
         for iteration in range(self.iterations):
             candidate = self._random_candidate()
-            if has_cap and self.constraint_mode == "repair":
+            if has_cap and self.constraint_mode == "repair" and is_solution_invalid(candidate, self.groups):
                 candidate = repair_solution(candidate, self.groups)
 
             fitness, units, hr, _, profit = evaluate_solution(
@@ -723,8 +725,14 @@ class SimulatedAnnealingOptimizer:
 
     def optimize(self) -> Solution:
         has_cap = self.objective in ("o2", "o3_weighted")
-        current = generate_o2_seed_solution(self.groups) if self.objective == "o2" else generate_random_solution(self.groups)
-        if has_cap and self.constraint_mode in ("repair", "penalty"):
+        if self.objective == "o2" and self.constraint_mode == "repair":
+            current = generate_random_feasible_solution(self.groups)
+        elif self.objective == "o2":
+            current = generate_o2_seed_solution(self.groups)
+        else:
+            current = generate_random_solution(self.groups)
+
+        if has_cap and self.constraint_mode in ("repair", "penalty") and is_solution_invalid(current, self.groups):
             current = repair_solution(current, self.groups)
         fitness, units, hr, _, profit = evaluate_solution(
             current, self.groups, self.objective, self.omega, self.constraint_mode

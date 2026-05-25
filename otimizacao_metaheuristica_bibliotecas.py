@@ -79,6 +79,8 @@ def _solution_to_vector(solution: base.Solution) -> np.ndarray:
 
 
 def _seed_solution(groups: list[base.Group], objective: str, constraint_mode: str) -> base.Solution:
+    if objective == "o2" and constraint_mode == "repair":
+        return base.generate_random_feasible_solution(groups)
     if objective in ("o2", "o3_weighted", "o3_pareto"):
         if random.random() < 0.7:
             return base.generate_o2_seed_solution(groups)
@@ -113,9 +115,11 @@ def _repair_solution(
     if objective in ("o2", "o3_weighted", "o3_pareto"):
         mode = "repair" if objective == "o3_pareto" else constraint_mode
         if mode == "repair":
-            if base.is_solution_invalid(repaired, groups):
+            invalid = base.is_solution_invalid(repaired, groups)
+            if invalid:
                 repaired = base.repair_solution(repaired, groups)
-            repaired = base._fill_o2_slack(repaired, groups, max_steps=max(3, len(groups) // 2))
+            if objective != "o2":
+                repaired = base._fill_o2_slack(repaired, groups, max_steps=max(3, len(groups) // 2))
     return repaired
 
 
